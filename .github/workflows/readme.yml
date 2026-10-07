@@ -11,6 +11,7 @@ on:
 
 jobs:
   readme:
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     # Cargo Assist also commits to this branch. Serialize both writers.
     concurrency:
