@@ -22,10 +22,14 @@ New parser fixtures are synthetic API examples. Passing fixture tests establishe
 parser behavior, not live compatibility with every firmware release. Private
 diagnostics, credentials, pool settings, and worker identities are not included.
 
-Hardware details are populated only when documented. BITMAIN's S21 XP Hyd user
-guide specifies three hashboards; per-board chip counts are left unknown.
-S21j XP Hyd and S23 Hyd board/chip counts remain unknown. Existing S21 Pro+,
-S21+ Hyd, and S21e XP Hyd identities were already present upstream.
+Hardware counts were verified through read-only `stats`/`version` RPC telemetry
+from 14 physical stock miners across eight firmware cohorts. Each model has three
+boards: **S21 XP Hyd has 160 ASICs per board**, **S21j XP Hyd has 42**, and
+**S23 Hyd has 84**. RPC `chain_acn` counts matched the working ASIC markers;
+`stats.cgi` independently confirmed the same `asic_num` values and three board
+indexes on a representative of each model. Formatting padding was excluded.
+See the [hardware evidence in the model PR](https://github.com/256foundation/asic-rs/pull/409).
+Existing S21 Pro+, S21+ Hyd, and S21e XP Hyd identities were already upstream.
 
 ## Verification boundary
 
@@ -41,9 +45,9 @@ representative response fixtures; they are not included in these additions.
 ## Using and contributing
 
 The fork works independently as a Rust library with Python and Go bindings.
-The Python distribution is `pyasic-rs-support-extension==0.8.5.post1`; its public
+The Python distribution is `pyasic-rs-support-extension==0.8.5.post2`; its public
 import remains `pyasic_rs`. Install the wheel for your platform from the
-[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post1)
+[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post2)
 with pip. Do not install upstream `pyasic-rs` into the same environment: both
 distributions own the same import namespace.
 
@@ -89,7 +93,8 @@ package namespaces.
 
 ## Validation
 
-On Windows x64, the complete Rust workspace suite passed (307 tests), as did
+Before the metadata correction, the complete Rust workspace suite passed on
+Windows x64 (307 tests), as did
 the Python suite against a locally built native extension (132 tests). Go's
 telemetry types and hardware helpers passed 17 isolated tests; full Go/FFI
 integration is covered by the Linux CI workflow. Formatting and generated

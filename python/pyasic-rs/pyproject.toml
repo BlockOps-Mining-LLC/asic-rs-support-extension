@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 # Support Extension distribution; the public import remains pyasic_rs.
 name = "pyasic_rs_support_extension"
-version = "0.8.5.post1"
+version = "0.8.5.post2"
 description = "Python bindings for ASIC-RS Support Extension"
 authors = [{ name = "Brett Rowan", email = "121075405+b-rowan@users.noreply.github.com" }]
 repository = "https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension"

@@ -144,5 +144,5 @@ jobs:
         run: |
           tag=$(cat release-tag.txt)
           gh release create "$tag" dist/*.whl dist/pyasic-rs-wheels.json dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --title "Support Extension 0.8.5.post1" \
+            --target "$GITHUB_SHA" --title "Support Extension ${tag#pyasic-rs-support-extension-v}" \
             --notes "Independent Support Extension Python distribution. Import remains pyasic_rs. CPython 3.11–3.14 ABI3 wheels; Linux x86_64/aarch64/ARMv7 and Windows x64. Offline telemetry/schema tests passed for each wheel; hardware control behavior requires separate device validation. These assets are not published to upstream package registries."
