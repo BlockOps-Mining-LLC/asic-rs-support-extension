@@ -3,7 +3,8 @@
 A public extension of [256foundation/asic-rs](https://github.com/256foundation/asic-rs)
 for additional ASIC models and firmware telemetry. Anyone can use, fork, or
 contribute under the retained Apache-2.0 license. Upstream history is preserved;
-changes are developed on the `support-extension` branch.
+the complete extension is maintained on `support-extension-runtime`. The
+`support-extension` branch contains model additions proposed upstream separately.
 
 ## First coverage additions
 
@@ -40,11 +41,23 @@ representative response fixtures; they are not included in these additions.
 ## Using and contributing
 
 The fork works independently as a Rust library with Python and Go bindings.
-Clone it and check out `support-extension`, then use the development commands
-below. A source build requires Rust and the toolchain for your target platform;
-the Python bindings also require Python and Maturin. No fork-specific binary
-release or published package is available yet. Registry packages linked in the
-upstream README refer to upstream releases and do not contain these changes.
+The Python distribution is `pyasic-rs-support-extension==0.8.5.post1`; its public
+import remains `pyasic_rs`. Install the wheel for your platform from the
+[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post1)
+with pip. Do not install upstream `pyasic-rs` into the same environment: both
+distributions own the same import namespace.
+
+The release provides standard CPython 3.11–3.14 ABI3 wheels for Linux x86_64,
+aarch64, ARMv7, and Windows x64, with SHA-256 checksums and a source revision
+manifest. Linux x86_64/aarch64 require glibc 2.28; ARMv7 requires glibc 2.17.
+Free-threaded Python is not supported. The fork workflow builds and tests these
+assets before publishing them to GitHub; it does not publish to PyPI or crates.io.
+Registry packages linked in the upstream README refer to upstream releases.
+
+For source development, check out `support-extension-runtime` and use the
+commands below. A source build requires Rust and the platform toolchain; Python
+bindings additionally require Python and Maturin. Add `--features python,abi3`
+when building a stable-ABI wheel.
 
 To add a model or firmware, provide sanitized response fixtures with documented
 units and the exact firmware version. Keep unknown measurements as unknown,

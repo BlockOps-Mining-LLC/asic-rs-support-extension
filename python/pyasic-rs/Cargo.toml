@@ -34,6 +34,8 @@ default = [
 ]
 
 python = ["core"]
+# Support Extension binary builds share the CPython 3.11+ stable ABI.
+abi3 = ["pyo3/abi3-py311"]
 core = ["asic-rs/core", "asic-rs/python"]
 antminer = ["core", "asic-rs/antminer"]
 futurebit = ["core", "asic-rs/futurebit"]

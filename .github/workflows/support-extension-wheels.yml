@@ -1,0 +1,148 @@
+name: Support Extension wheels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: support-extension-wheels
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64
+            manylinux: "2_28"
+            interpreter: python3.11
+          - platform: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: "2_28"
+            interpreter: python3.11
+          - platform: linux-armv7l
+            os: ubuntu-24.04
+            target: armv7-unknown-linux-gnueabihf
+            manylinux: "2_17"
+            interpreter: python3.11
+          - platform: windows-amd64
+            os: windows-latest
+            target: x64
+            interpreter: python
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: v1.15.0
+          working-directory: python/pyasic-rs
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --features python,abi3 -i ${{ matrix.interpreter }} --out ../../dist
+          sccache: true
+      - name: Test native wheel
+        if: matrix.platform != 'linux-armv7l'
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl pytest
+          python -m pip check
+          python -m pytest -q python/pyasic-rs/tests
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'linux-armv7l'
+        with:
+          platforms: arm
+      - name: Test ARMv7 wheel under emulation
+        if: matrix.platform == 'linux-armv7l'
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/workspace" -w /workspace \
+            python:3.11-bullseye bash -ec \
+            'python -m pip install dist/*.whl pytest && python -m pip check && python -m pytest -q python/pyasic-rs/tests'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  compatibility:
+    name: ABI3 Python ${{ matrix.python }} (${{ matrix.platform }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+          - platform: windows-amd64
+            os: windows-latest
+        platform: [linux-x86_64, windows-amd64]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v6
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist
+      - name: Test installed ABI3 wheel
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl pytest
+          python -m pip check
+          python -m pytest -q python/pyasic-rs/tests
+
+  release:
+    needs: [build, compatibility]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Lock release artifacts
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, tomllib, zipfile
+          project = tomllib.loads(pathlib.Path('python/pyasic-rs/pyproject.toml').read_text())['project']
+          name, version = project['name'].replace('_', '-'), project['version']
+          assert name == 'pyasic-rs-support-extension'
+          tag = f'{name}-v{version}'
+          wheels = {}
+          for wheel in sorted(pathlib.Path('dist').glob('*.whl')):
+              with zipfile.ZipFile(wheel) as archive:
+                  metadata = archive.read(next(p for p in archive.namelist() if p.endswith('.dist-info/METADATA'))).decode()
+                  assert f'Name: {name.replace("-", "_")}' in metadata or f'Name: {name}' in metadata
+                  assert f'Version: {version}\n' in metadata
+              assert '-cp311-abi3-' in wheel.name
+              platform = next(key for suffix, key in [('x86_64.whl', 'linux-x86_64'), ('aarch64.whl', 'linux-aarch64'), ('armv7l.whl', 'linux-armv7l'), ('win_amd64.whl', 'windows-amd64')] if wheel.name.endswith(suffix))
+              assert platform not in wheels
+              wheels[platform] = {'url': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{tag}/{wheel.name}', 'sha256': hashlib.sha256(wheel.read_bytes()).hexdigest()}
+          assert set(wheels) == {'linux-x86_64', 'linux-aarch64', 'linux-armv7l', 'windows-amd64'}
+          pathlib.Path('dist/pyasic-rs-wheels.json').write_text(json.dumps({'distribution': name, 'version': version, 'source_revision': os.environ['GITHUB_SHA'], 'wheels': wheels}, indent=2) + '\n')
+          pathlib.Path('dist/SHA256SUMS').write_text(''.join(f'{entry["sha256"]}  {entry["url"].rsplit("/", 1)[1]}\n' for entry in wheels.values()))
+          pathlib.Path('release-tag.txt').write_text(tag)
+          PY
+      - name: Publish fork binary assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(cat release-tag.txt)
+          gh release create "$tag" dist/*.whl dist/pyasic-rs-wheels.json dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "Support Extension 0.8.5.post1" \
+            --notes "Independent Support Extension Python distribution. Import remains pyasic_rs. CPython 3.11–3.14 ABI3 wheels; Linux x86_64/aarch64/ARMv7 and Windows x64. Offline telemetry/schema tests passed for each wheel; hardware control behavior requires separate device validation. These assets are not published to upstream package registries."
