@@ -267,9 +267,7 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     ));
 
     #[cfg(feature = "antminer")]
-    registry.push(Arc::new(
-        asic_rs_firmwares_antminer::hiveon::HiveonFirmware::default(),
-    ));
+    registry.push(Arc::new(asic_rs_firmwares_antminer::hiveon::HiveonFirmware));
 
     #[cfg(feature = "luxminer")]
     registry.push(Arc::new(
@@ -277,9 +275,7 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     ));
 
     #[cfg(feature = "kaonsu")]
-    registry.push(Arc::new(
-        asic_rs_firmwares_kaonsu::firmware::KaonsuFirmware::default(),
-    ));
+    registry.push(Arc::new(asic_rs_firmwares_kaonsu::firmware::KaonsuFirmware));
 
     #[cfg(feature = "marathon")]
     registry.push(Arc::new(
@@ -309,17 +305,17 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     // Stock firmwares — checked last so non-stock take priority
     #[cfg(feature = "goldshell")]
     registry.push(Arc::new(
-        asic_rs_firmwares_goldshell::firmware::GoldshellFirmware::default(),
+        asic_rs_firmwares_goldshell::firmware::GoldshellFirmware,
     ));
 
     #[cfg(feature = "innosilicon")]
     registry.push(Arc::new(
-        asic_rs_firmwares_innosilicon::firmware::InnosiliconFirmware::default(),
+        asic_rs_firmwares_innosilicon::firmware::InnosiliconFirmware,
     ));
 
     #[cfg(feature = "iceriver")]
     registry.push(Arc::new(
-        asic_rs_firmwares_iceriver::firmware::IceRiverStockFirmware::default(),
+        asic_rs_firmwares_iceriver::firmware::IceRiverStockFirmware,
     ));
 
     #[cfg(feature = "futurebit")]

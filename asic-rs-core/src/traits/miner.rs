@@ -52,52 +52,6 @@ fn observed_chip_total(boards: &[BoardData], expected_boards: Option<u8>) -> Opt
     })
 }
 
-#[cfg(test)]
-mod chip_total_tests {
-    use super::*;
-
-    fn boards(counts: &[Option<u16>]) -> Vec<BoardData> {
-        counts
-            .iter()
-            .enumerate()
-            .map(|(index, count)| {
-                let mut board = BoardData::new(index as u8, None);
-                board.working_chips = *count;
-                board
-            })
-            .collect()
-    }
-
-    #[test]
-    fn partial_board_counts_are_not_whole_miner_totals() {
-        assert_eq!(observed_chip_total(&[], None), None);
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(0), None, None]), Some(3)),
-            None
-        );
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(160), Some(160)]), Some(3)),
-            None
-        );
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(65535), Some(1)]), None),
-            None
-        );
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(0), Some(0), Some(0)]), Some(3)),
-            Some(0)
-        );
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(42), Some(42), Some(42)]), Some(3)),
-            Some(126)
-        );
-        assert_eq!(
-            observed_chip_total(&boards(&[Some(16), Some(16)]), None),
-            Some(32)
-        );
-    }
-}
-
 pub trait MinerConstructor {
     #[allow(clippy::new_ret_no_self)]
     fn new(ip: IpAddr, model: impl MinerModel, version: Option<semver::Version>) -> Box<dyn Miner>;
@@ -1341,5 +1295,51 @@ pub trait SupportsFanConfig: CollectConfigs {
 
     fn supports_fan_config(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod chip_total_tests {
+    use super::*;
+
+    fn boards(counts: &[Option<u16>]) -> Vec<BoardData> {
+        counts
+            .iter()
+            .enumerate()
+            .map(|(index, count)| {
+                let mut board = BoardData::new(index as u8, None);
+                board.working_chips = *count;
+                board
+            })
+            .collect()
+    }
+
+    #[test]
+    fn partial_board_counts_are_not_whole_miner_totals() {
+        assert_eq!(observed_chip_total(&[], None), None);
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(0), None, None]), Some(3)),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(160), Some(160)]), Some(3)),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(65535), Some(1)]), None),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(0), Some(0), Some(0)]), Some(3)),
+            Some(0)
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(42), Some(42), Some(42)]), Some(3)),
+            Some(126)
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(16), Some(16)]), None),
+            Some(32)
+        );
     }
 }

@@ -109,7 +109,7 @@ fn temperature(value: &Value) -> Option<Temperature> {
         .map(Temperature::from_celsius)
 }
 
-fn panel<'a>(data: &'a HashMap<DataField, Value>, field: DataField) -> Option<&'a Value> {
+fn panel(data: &HashMap<DataField, Value>, field: DataField) -> Option<&Value> {
     data.get(&field)
 }
 
