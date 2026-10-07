@@ -12,9 +12,16 @@ jobs:
   cargo-assist:
     name: Cargo Assist
     runs-on: ubuntu-latest
+    concurrency:
+      group: branch-maintenance-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # Keep push runs current after waiting behind the README writer.
+          ref: ${{ github.event_name == 'push' && github.ref || '' }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run Cargo Assist
