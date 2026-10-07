@@ -39,8 +39,34 @@ Inherited firmware controls are unchanged and require device-specific checks.
 Applications should validate control behavior separately before enabling
 automation for newly recognized hardware.
 
-Hiveon and IceRiver coverage require distinct protocol implementations and
-representative response fixtures; they are not included in these additions.
+## Development coverage awaiting device validation
+
+The current branch adds the following source implementations. These are not
+included in the published `0.8.5.post2` wheels and are not a claim of complete
+fleet compatibility.
+
+| Firmware or model | Added telemetry | Evidence and remaining checks |
+| --- | --- | --- |
+| Stock Bitmain | Modern CGI fallback, current and expected board rates, serials, frequency, actual chip counts, fan padding, uptime and power field provenance | Sanitized captures from three hydro models; remaining air-cooled/non-SHA models need live checks |
+| AL1, KS7, S19 NoPIC | Exact model identities and appropriate algorithms; uncertain hardware counts remain unknown | Source-backed identification; live firmware checks pending |
+| Hiveon | Read-only CGMiner telemetry using the stock schema and exact Hiveon identity | Source/fixture tests; live checks pending |
+| IceRiver | Vendor-specific authenticated telemetry, KS-family and AL3 identities, rates, board temperatures/chips, fans, uptime and pools | Source/fixture and local HTTP session tests; live checks pending |
+| KaonSu/Mara | Four telemetry GET paths, per-board rates/chips/temperatures, fans, runtime state and explicit power estimates with original source/indicator | Sanitized existing driver contract; live checks pending |
+| Goldshell | BFGMiner rates, board readings/chips, fans and runtime fields with explicit units | Source-backed contracts; exact fleet products need identification and live checks |
+| Innosilicon | CGMiner and HTTP rates, board readings/chips, fans and reported power | Source-backed contracts; generic inventory/firmware labels do not prove an A9 variant |
+
+Vendor and firmware identity must match before selecting a backend. In
+particular, an AL3 labelled Bitmain is not automatically treated as IceRiver.
+Unknown algorithms retain explicit rate units without inheriting SHA-256
+economics. Unavailable measurements remain `None`; a reported zero stays zero.
+Power estimates are labelled separately from reported power, and neither is
+claimed as independently measured wall consumption.
+
+All newly added firmware backends are read-only and reject arbitrary commands,
+configuration changes and controls. Their authenticated POSTs perform vendor
+login/read operations only. Existing stock controls are unchanged. Remaining
+validation is planned against the other farm networks before a new binary
+release or an upstream pull request.
 
 ## Using and contributing
 
@@ -93,10 +119,11 @@ package namespaces.
 
 ## Validation
 
-Before the metadata correction, the complete Rust workspace suite passed on
-Windows x64 (307 tests), as did
-the Python suite against a locally built native extension (132 tests). Go's
-telemetry types and hardware helpers passed 17 isolated tests; full Go/FFI
-integration is covered by the Linux CI workflow. Formatting and generated
-supported-device documentation checks passed. These are offline checks and
-do not establish live hardware or firmware-control acceptance.
+The development candidate passed the complete Rust workspace suite on Windows
+x64 (354 tests, with 21 live-device/example tests ignored), the Python suite
+against a locally built native extension (146 tests), and 18 isolated Go
+telemetry-type/helper tests. Full Go/FFI integration remains a Linux CI check.
+Three documentation-generator tests, formatting and regeneration checks passed.
+These offline checks do not establish live compatibility for the added vendor
+backends or firmware controls. Fresh candidate device acceptance remains pending
+network access; the published wheel pin has not changed.

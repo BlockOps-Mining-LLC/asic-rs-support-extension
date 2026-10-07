@@ -18,3 +18,26 @@ pub(crate) const L9_VERSION: &str = include_str!("l9_version.json");
 pub(crate) const L11_STATS: &str = include_str!("l11_stats.json");
 pub(crate) const L11_SUMMARY: &str = include_str!("l11_summary.json");
 pub(crate) const L11_VERSION: &str = include_str!("l11_version.json");
+
+// Captured 2026-10-07 from verified S5 stock miners using only GET stats /
+// summary and RPC stats. Board serials and miner identifiers are redacted;
+// telemetry values and response shapes are unchanged. These are offline
+// regression fixtures, not acceptance of a Rust poll against live hardware.
+pub(crate) const S21_XP_HYDRO_WEB_STATS_CAPTURED: &str =
+    include_str!("s21_xp_hydro_web_stats_captured.json");
+pub(crate) const S21J_XP_HYDRO_WEB_STATS_CAPTURED: &str =
+    include_str!("s21j_xp_hydro_web_stats_captured.json");
+pub(crate) const S23_HYDRO_WEB_STATS_CAPTURED: &str =
+    include_str!("s23_hydro_web_stats_captured.json");
+pub(crate) const S21_XP_HYDRO_RPC_STATS_CAPTURED: &str =
+    include_str!("s21_xp_hydro_rpc_stats_captured.json");
+pub(crate) const S21J_XP_HYDRO_RPC_STATS_CAPTURED: &str =
+    include_str!("s21j_xp_hydro_rpc_stats_captured.json");
+pub(crate) const S23_HYDRO_RPC_STATS_CAPTURED: &str =
+    include_str!("s23_hydro_rpc_stats_captured.json");
+pub(crate) const S21_XP_HYDRO_WEB_SUMMARY_CAPTURED: &str =
+    include_str!("s21_xp_hydro_web_summary_captured.json");
+pub(crate) const S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED: &str =
+    include_str!("s21j_xp_hydro_web_summary_captured.json");
+pub(crate) const S23_HYDRO_WEB_SUMMARY_CAPTURED: &str =
+    include_str!("s23_hydro_web_summary_captured.json");

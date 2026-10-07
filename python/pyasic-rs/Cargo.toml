@@ -16,6 +16,10 @@ crate-type = ["cdylib"]
 [features]
 default = [
     "antminer",
+    "iceriver",
+    "kaonsu",
+    "innosilicon",
+    "goldshell",
     "futurebit",
     "auradine",
     "avalonminer",
@@ -38,6 +42,10 @@ python = ["core"]
 abi3 = ["pyo3/abi3-py311"]
 core = ["asic-rs/core", "asic-rs/python"]
 antminer = ["core", "asic-rs/antminer"]
+iceriver = ["core", "asic-rs/iceriver"]
+kaonsu = ["core", "asic-rs/kaonsu"]
+innosilicon = ["core", "asic-rs/innosilicon"]
+goldshell = ["core", "asic-rs/goldshell"]
 futurebit = ["core", "asic-rs/futurebit"]
 auradine = ["core", "asic-rs/auradine"]
 avalonminer = ["core", "asic-rs/avalonminer"]

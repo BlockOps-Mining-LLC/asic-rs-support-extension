@@ -1,0 +1,52 @@
+{
+  "STATUS": {
+    "STATUS": "S",
+    "when": 1791401146,
+    "Msg": "summary",
+    "api_version": "1.0.0"
+  },
+  "INFO": {
+    "miner_version": "platform[AML]",
+    "CompileTime": "Fri Jun 26 09:24:23 CST 2026",
+    "type": "Antminer S23 Hyd."
+  },
+  "SUMMARY": [
+    {
+      "elapsed": 167431,
+      "rate_5s": 572845.56,
+      "rate_30m": 577652.87,
+      "rate_avg": 576152.67,
+      "rate_ideal": 581972.7,
+      "rate_unit": "GH/s",
+      "hw_all": 551,
+      "bestshare": 0,
+      "safe_mode": false,
+      "status": [
+        {
+          "type": "rate",
+          "status": "s",
+          "code": 0,
+          "msg": ""
+        },
+        {
+          "type": "network",
+          "status": "s",
+          "code": 0,
+          "msg": ""
+        },
+        {
+          "type": "fans",
+          "status": "",
+          "code": 0,
+          "msg": ""
+        },
+        {
+          "type": "temp",
+          "status": "s",
+          "code": 0,
+          "msg": ""
+        }
+      ]
+    }
+  ]
+}

@@ -606,9 +606,14 @@ type MinerData struct {
 	Fans                   []FanData           `json:"fans"`
 	PSUFans                []FanData           `json:"psu_fans"`
 	AverageTemperature     *float64            `json:"average_temperature"`
+	ReportedMaxTemperature *float64            `json:"reported_max_temperature"`
 	FluidTemperature       *float64            `json:"fluid_temperature"`
 	OutletFluidTemperature *float64            `json:"outlet_fluid_temperature"`
 	Wattage                *float64            `json:"wattage"`
+	WattageSource          *string             `json:"wattage_source"`
+	WattageIsEstimated     *bool               `json:"wattage_is_estimated"`
+	WattageFirmwareSource  *string             `json:"wattage_firmware_source"`
+	WattageIndicator       *int64              `json:"wattage_indicator"`
 	TuningPercent          *uint8              `json:"tuning_percent"`
 	TuningTarget           *TuningTarget       `json:"tuning_target"`
 	ScaledTuningTarget     *TuningTarget       `json:"scaled_tuning_target"`

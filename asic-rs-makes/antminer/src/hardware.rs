@@ -10,6 +10,13 @@ use crate::models::AntMinerModel;
 impl From<AntMinerModel> for MinerHardware {
     fn from(value: AntMinerModel) -> Self {
         match &value {
+            // The farm inventory proves these identities, but does not prove
+            // their chip or fan topology. Actual API boards remain available.
+            AntMinerModel::AL1 => Default::default(),
+            AntMinerModel::KS7 => Self {
+                fans: None,
+                boards: Some(vec![None; 3]),
+            },
             AntMinerModel::D3 => Self {
                 fans: Some(4),
                 boards: Some(vec![Some(60), Some(60), Some(60)]),
@@ -130,6 +137,11 @@ impl From<AntMinerModel> for MinerHardware {
                 fans: Some(4),
                 boards: Some(vec![Some(76), Some(76), Some(76)]),
             },
+            // pyasic's S19NoPIC model and exact Hiveon S19X88 mapping.
+            AntMinerModel::S19NoPIC => Self {
+                fans: Some(4),
+                boards: Some(vec![Some(88); 3]),
+            },
             AntMinerModel::S19L => Self {
                 fans: Some(4),
                 boards: Some(vec![Some(76), Some(76), Some(76)]),
@@ -222,10 +234,9 @@ impl From<AntMinerModel> for MinerHardware {
                 fans: Some(4),
                 boards: Some(vec![Some(65), Some(65), Some(65)]),
             },
-            AntMinerModel::S21ProPlus => Self {
-                fans: Some(4),
-                boards: Some(vec![Some(65), Some(65), Some(65)]),
-            },
+            // This farm product is distinct from S21 Pro. The inventory does
+            // not establish a factory chip count or fan count for it.
+            AntMinerModel::S21ProPlus => Default::default(),
             AntMinerModel::S21XP => Self {
                 fans: Some(4),
                 boards: Some(vec![Some(91), Some(91), Some(91)]),

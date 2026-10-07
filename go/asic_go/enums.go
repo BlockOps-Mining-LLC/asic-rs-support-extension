@@ -13,6 +13,7 @@ const (
 	HashAlgorithmScrypt      HashAlgorithm = "Scrypt"
 	HashAlgorithmX11         HashAlgorithm = "X11"
 	HashAlgorithmBlake2S256  HashAlgorithm = "Blake2S256"
+	HashAlgorithmBlake3      HashAlgorithm = "Blake3"
 	HashAlgorithmKadena      HashAlgorithm = "Kadena"
 	HashAlgorithmKHeavyHash  HashAlgorithm = "KHeavyHash"
 	HashAlgorithmEaglesong   HashAlgorithm = "Eaglesong"
@@ -32,7 +33,7 @@ func (a HashAlgorithm) DefaultHashrateUnit() (HashRateUnit, error) {
 		return HashRateUnitMegaHash, nil
 	case HashAlgorithmEquihash:
 		return HashRateUnitKiloHash, nil
-	case HashAlgorithmSHA256, HashAlgorithmBlake2S256, HashAlgorithmKadena,
+	case HashAlgorithmSHA256, HashAlgorithmBlake2S256, HashAlgorithmBlake3, HashAlgorithmKadena,
 		HashAlgorithmKHeavyHash, HashAlgorithmEaglesong, HashAlgorithmHandshake, HashAlgorithmBlake256R14:
 		return HashRateUnitTeraHash, nil
 	case HashAlgorithmUnknown:
@@ -45,6 +46,9 @@ func (a HashAlgorithm) DefaultHashrateUnit() (HashRateUnit, error) {
 // ParseHashAlgorithm validates a shared algorithm name. Unknown is explicit;
 // misspelled names never silently become SHA256 or Unknown.
 func ParseHashAlgorithm(name string) (HashAlgorithm, error) {
+	if name == "BlockFlow" {
+		name = string(HashAlgorithmBlake3)
+	}
 	algorithm := HashAlgorithm(name)
 	_, err := algorithm.DefaultHashrateUnit()
 	if err != nil {

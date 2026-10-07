@@ -353,6 +353,7 @@ func TestRequiredCollectionsMatchRustFixtures(t *testing.T) {
 func TestAlgorithmDefaultsAndHardwareHelpers(t *testing.T) {
 	cases := map[HashAlgorithm]HashRateUnit{
 		HashAlgorithmSHA256:   HashRateUnitTeraHash,
+		HashAlgorithmBlake3:   HashRateUnitTeraHash,
 		HashAlgorithmScrypt:   HashRateUnitGigaHash,
 		HashAlgorithmEtHash:   HashRateUnitMegaHash,
 		HashAlgorithmEquihash: HashRateUnitKiloHash,
@@ -365,6 +366,9 @@ func TestAlgorithmDefaultsAndHardwareHelpers(t *testing.T) {
 		}
 	}
 	var algo HashAlgorithm
+	if err := json.Unmarshal([]byte(`"BlockFlow"`), &algo); err != nil || algo != HashAlgorithmBlake3 {
+		t.Fatalf("Blake3 alias: %s, %v", algo, err)
+	}
 	if err := json.Unmarshal([]byte(`"typo"`), &algo); err == nil {
 		t.Fatal("unknown algorithm accepted")
 	}
@@ -386,6 +390,20 @@ func TestAlgorithmDefaultsAndHardwareHelpers(t *testing.T) {
 	}
 	if _, ok := (MinerHardware{}).TotalChips(); ok {
 		t.Fatal("missing boards became a known count")
+	}
+}
+
+func TestPowerProvenancePreservesReportedZeroAndUnknown(t *testing.T) {
+	var data MinerData
+	if err := json.Unmarshal([]byte(`{"wattage":0,"wattage_source":"vendor.brief","wattage_is_estimated":true,"wattage_firmware_source":"PSU","wattage_indicator":0,"reported_max_temperature":70}`), &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Wattage == nil || *data.Wattage != 0 || data.WattageIsEstimated == nil || !*data.WattageIsEstimated || data.WattageIndicator == nil || *data.WattageIndicator != 0 || data.ReportedMaxTemperature == nil || *data.ReportedMaxTemperature != 70 {
+		t.Fatalf("reported values lost: %+v", data)
+	}
+	var missing MinerData
+	if err := json.Unmarshal([]byte(`{}`), &missing); err != nil || missing.WattageIsEstimated != nil || missing.WattageIndicator != nil || missing.ReportedMaxTemperature != nil {
+		t.Fatalf("missing fields became known: %+v, %v", missing, err)
 	}
 }
 

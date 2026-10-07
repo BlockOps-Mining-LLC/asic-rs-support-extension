@@ -21,7 +21,7 @@ use asic_rs_core::{
         fan::FanData,
         firmware::FirmwareImage,
         hashrate::HashRate,
-        message::{MessageSeverity, MinerMessage},
+        message::MinerMessage,
         miner::{MiningMode, TuningTarget},
         pool::{PoolData, PoolGroupData, PoolURL},
     },
@@ -266,11 +266,6 @@ impl GetDataLocations for AntMinerV202307 {
             parameters: None,
         };
 
-        const RPC_STATS: MinerCommand = MinerCommand::RPC {
-            command: "stats",
-            parameters: None,
-        };
-
         const RPC_POOLS: MinerCommand = MinerCommand::RPC {
             command: "pools",
             parameters: None,
@@ -378,14 +373,7 @@ impl GetDataLocations for AntMinerV202307 {
                 }));
                 locations
             }
-            DataField::Uptime => vec![(
-                RPC_STATS,
-                DataExtractor {
-                    func: get_by_pointer,
-                    key: Some("/STATS/1/Elapsed"),
-                    tag: None,
-                },
-            )],
+            DataField::Uptime => telemetry::stats_locations(),
             DataField::Pools => vec![(
                 RPC_POOLS,
                 DataExtractor {
@@ -417,7 +405,7 @@ impl GetDataLocations for AntMinerV202307 {
                 WEB_SUMMARY,
                 DataExtractor {
                     func: get_by_pointer,
-                    key: Some("/SUMMARY/0/status"),
+                    key: Some(""),
                     tag: None,
                 },
             )],
@@ -535,7 +523,7 @@ impl GetLightFlashing for AntMinerV202307 {
 
 impl GetUptime for AntMinerV202307 {
     fn parse_uptime(&self, data: &HashMap<DataField, Value>) -> Option<Duration> {
-        data.extract_map::<u64, _>(DataField::Uptime, Duration::from_secs)
+        telemetry::uptime(data.get(&DataField::Uptime)?)
     }
 }
 
@@ -644,6 +632,10 @@ impl GetWattage for AntMinerV202307 {
     fn parse_wattage(&self, data: &HashMap<DataField, Value>) -> Option<Power> {
         telemetry::wattage(data.get(&DataField::Wattage)?)
     }
+
+    fn parse_wattage_source(&self, data: &HashMap<DataField, Value>) -> Option<String> {
+        telemetry::wattage_source(data.get(&DataField::Wattage)?)
+    }
 }
 
 impl GetTuningTarget for AntMinerV202307 {
@@ -697,34 +689,9 @@ impl SupportsTimezoneConfig for AntMinerV202307 {}
 
 impl GetMessages for AntMinerV202307 {
     fn parse_messages(&self, data: &HashMap<DataField, Value>) -> Vec<MinerMessage> {
-        let mut messages = Vec::new();
-
-        if let Some(status_data) = data.get(&DataField::Messages)
-            && let Some(status_array) = status_data.as_array()
-        {
-            for (idx, item) in status_array.iter().enumerate() {
-                if let Some(status) = item.get("status").and_then(|v| v.as_str())
-                    && status != "s"
-                {
-                    // 's' means success/ok
-                    let message_text = item
-                        .get("msg")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown error")
-                        .to_string();
-
-                    let severity = match status.to_lowercase().as_str() {
-                        "e" => MessageSeverity::Error,
-                        "w" => MessageSeverity::Warning,
-                        _ => MessageSeverity::Info,
-                    };
-
-                    messages.push(MinerMessage::new(0, idx as u64, message_text, severity));
-                }
-            }
-        }
-
-        messages
+        data.get(&DataField::Messages)
+            .map(telemetry::messages)
+            .unwrap_or_default()
     }
 }
 

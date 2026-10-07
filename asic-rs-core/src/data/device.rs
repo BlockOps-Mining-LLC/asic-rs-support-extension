@@ -164,6 +164,11 @@ pub enum HashAlgorithm {
     #[cfg_attr(feature = "python", pydantic(value = "Blake256R14"))]
     #[serde(rename = "Blake256R14")]
     Blake256R14,
+    /// Blake3 mining, as used by Alephium (also named BlockFlow).
+    #[cfg_attr(feature = "python", pydantic(value = "Blake3"))]
+    #[serde(rename = "Blake3", alias = "BlockFlow")]
+    #[strum(to_string = "Blake3", serialize = "BlockFlow")]
+    Blake3,
     /// An algorithm this crate cannot name.
     ///
     /// Reported when a miner names an algorithm that is not one of the above,
@@ -189,7 +194,8 @@ impl HashAlgorithm {
             | HashAlgorithm::KHeavyHash
             | HashAlgorithm::Eaglesong
             | HashAlgorithm::Handshake
-            | HashAlgorithm::Blake256R14 => HashRateUnit::TeraHash,
+            | HashAlgorithm::Blake256R14
+            | HashAlgorithm::Blake3 => HashRateUnit::TeraHash,
             HashAlgorithm::Unknown => HashRateUnit::Hash,
         }
     }
@@ -293,5 +299,22 @@ mod tests {
             HashAlgorithm::from_str("Unknown").ok(),
             Some(HashAlgorithm::Unknown)
         );
+    }
+
+    #[test]
+    fn alephium_algorithm_alias_keeps_the_terahash_unit() {
+        assert_eq!(
+            HashAlgorithm::from_str("BlockFlow").ok(),
+            Some(HashAlgorithm::Blake3)
+        );
+        assert_eq!(
+            serde_json::from_str::<HashAlgorithm>("\"BlockFlow\"").ok(),
+            Some(HashAlgorithm::Blake3)
+        );
+        assert_eq!(
+            HashAlgorithm::Blake3.default_hashrate_unit(),
+            HashRateUnit::TeraHash
+        );
+        assert_eq!(HashAlgorithm::Blake3.to_string(), "Blake3");
     }
 }

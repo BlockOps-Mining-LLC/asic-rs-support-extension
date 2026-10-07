@@ -41,6 +41,63 @@ use crate::{
 
 pub use crate::traits::auth::{ExposeSecret, HasAuth, HasDefaultAuth, MinerAuth, SecretString};
 
+fn observed_chip_total(boards: &[BoardData], expected_boards: Option<u8>) -> Option<u16> {
+    if boards.is_empty()
+        || expected_boards.is_some_and(|expected| usize::from(expected) != boards.len())
+    {
+        return None;
+    }
+    boards.iter().try_fold(0_u16, |total, board| {
+        total.checked_add(board.working_chips?)
+    })
+}
+
+#[cfg(test)]
+mod chip_total_tests {
+    use super::*;
+
+    fn boards(counts: &[Option<u16>]) -> Vec<BoardData> {
+        counts
+            .iter()
+            .enumerate()
+            .map(|(index, count)| {
+                let mut board = BoardData::new(index as u8, None);
+                board.working_chips = *count;
+                board
+            })
+            .collect()
+    }
+
+    #[test]
+    fn partial_board_counts_are_not_whole_miner_totals() {
+        assert_eq!(observed_chip_total(&[], None), None);
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(0), None, None]), Some(3)),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(160), Some(160)]), Some(3)),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(65535), Some(1)]), None),
+            None
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(0), Some(0), Some(0)]), Some(3)),
+            Some(0)
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(42), Some(42), Some(42)]), Some(3)),
+            Some(126)
+        );
+        assert_eq!(
+            observed_chip_total(&boards(&[Some(16), Some(16)]), None),
+            Some(32)
+        );
+    }
+}
+
 pub trait MinerConstructor {
     #[allow(clippy::new_ret_no_self)]
     fn new(ip: IpAddr, model: impl MinerModel, version: Option<semver::Version>) -> Box<dyn Miner>;
@@ -278,6 +335,11 @@ impl<
         let hashrate = self.parse_hashrate(&data);
         let expected_hashrate = self.parse_expected_hashrate(&data);
         let wattage = self.parse_wattage(&data);
+        let wattage_source = wattage.and_then(|_| self.parse_wattage_source(&data));
+        let wattage_is_estimated = wattage.and_then(|_| self.parse_wattage_is_estimated(&data));
+        let wattage_firmware_source =
+            wattage.and_then(|_| self.parse_wattage_firmware_source(&data));
+        let wattage_indicator = wattage.and_then(|_| self.parse_wattage_indicator(&data));
         let tuning_percent = self.parse_tuning_percent(&data);
         let tuning_target = self.parse_tuning_target(&data);
         let scaled_tuning_target = self.parse_scaled_tuning_target(&data);
@@ -287,6 +349,7 @@ impl<
         let fans = self.parse_fans(&data);
         let psu_fans = self.parse_psu_fans(&data);
         let hashboards = self.parse_hashboards(&data);
+        let reported_max_temperature = self.parse_reported_max_temperature(&data);
         let light_flashing = self.parse_light_flashing(&data);
         let is_mining = self.parse_is_mining(&data);
         let operating_state = self.parse_operating_state(&data);
@@ -298,18 +361,7 @@ impl<
         let device_info = self.get_device_info();
 
         // computed fields
-        let total_chips = {
-            let chips = hashboards
-                .iter()
-                .filter_map(|b| b.working_chips)
-                .collect::<Vec<u16>>();
-
-            if !chips.is_empty() {
-                Some(chips.iter().sum())
-            } else {
-                None
-            }
-        };
+        let total_chips = observed_chip_total(&hashboards, device_info.hardware.board_count());
         let average_temperature = {
             let board_temps = hashboards
                 .iter()
@@ -369,11 +421,16 @@ impl<
             fans,
             psu_fans,
             average_temperature,
+            reported_max_temperature,
             fluid_temperature,
             outlet_fluid_temperature,
 
             // Power information
             wattage,
+            wattage_source,
+            wattage_is_estimated,
+            wattage_firmware_source,
+            wattage_indicator,
             tuning_percent,
             tuning_target,
             scaled_tuning_target,
@@ -603,6 +660,15 @@ pub trait GetControlBoardVersion: CollectData {
 // Hashboards
 #[async_trait]
 pub trait GetHashboards: CollectData {
+    /// A whole-miner maximum explicitly reported alongside board telemetry.
+    /// Missing values remain unknown and are never inferred from averages.
+    #[allow(unused_variables)]
+    fn parse_reported_max_temperature(
+        &self,
+        data: &HashMap<DataField, Value>,
+    ) -> Option<Temperature> {
+        None
+    }
     #[tracing::instrument(level = "debug")]
     async fn get_hashboards(&self) -> Vec<BoardData> {
         let mut collector = self.get_collector();
@@ -725,6 +791,18 @@ pub trait GetWattage: CollectData {
     }
     #[allow(unused_variables)]
     fn parse_wattage(&self, data: &HashMap<DataField, Value>) -> Option<Power> {
+        None
+    }
+    fn parse_wattage_source(&self, _data: &HashMap<DataField, Value>) -> Option<String> {
+        None
+    }
+    fn parse_wattage_is_estimated(&self, _data: &HashMap<DataField, Value>) -> Option<bool> {
+        None
+    }
+    fn parse_wattage_firmware_source(&self, _data: &HashMap<DataField, Value>) -> Option<String> {
+        None
+    }
+    fn parse_wattage_indicator(&self, _data: &HashMap<DataField, Value>) -> Option<i64> {
         None
     }
 }

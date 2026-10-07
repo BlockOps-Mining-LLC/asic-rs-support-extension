@@ -18,7 +18,11 @@ use serde_json::{Value, json};
 
 use super::{telemetry::*, v2020::AntMinerV2020, v2023_07::AntMinerV202307};
 use crate::test::json::v2023_07::{
-    S21_HYDRO_COOLANT_SYNTHETIC, S21_PLUS_HYDRO_SYNTHETIC, S23_HYDRO_STANDARD_SYNTHETIC,
+    S21_HYDRO_COOLANT_SYNTHETIC, S21_PLUS_HYDRO_SYNTHETIC, S21_XP_HYDRO_RPC_STATS_CAPTURED,
+    S21_XP_HYDRO_WEB_STATS_CAPTURED, S21_XP_HYDRO_WEB_SUMMARY_CAPTURED,
+    S21J_XP_HYDRO_RPC_STATS_CAPTURED, S21J_XP_HYDRO_WEB_STATS_CAPTURED,
+    S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED, S23_HYDRO_RPC_STATS_CAPTURED, S23_HYDRO_STANDARD_SYNTHETIC,
+    S23_HYDRO_WEB_STATS_CAPTURED, S23_HYDRO_WEB_SUMMARY_CAPTURED,
 };
 
 fn row(fixture: &str) -> Value {
@@ -60,6 +64,31 @@ fn modern_s21_plus_hydro_keeps_sensor_domains_separate() {
     assert_eq!(board.expected_chips, None);
     assert_eq!(board.working_chips, Some(120));
     assert_eq!(board.active, Some(true));
+}
+
+#[test]
+fn plausible_hot_board_and_chip_readings_remain_visible() {
+    let boards = hashboards(
+        &json!({"chain": [
+            {"index": 1, "temp_pcb": [0, 180, 255], "temp_chip": [180, 200, 255]},
+            {"index": 2, "temp_pcb": [255], "temp_chip": [255]}
+        ]}),
+        "S19",
+        HashAlgorithm::SHA256,
+        &no_assumed_hardware(),
+    );
+    assert_eq!(boards[0].board_temperature.unwrap().as_celsius(), 180.0);
+    assert_eq!(
+        boards[0].inlet_chip_temperature.unwrap().as_celsius(),
+        180.0
+    );
+    assert_eq!(
+        boards[0].outlet_chip_temperature.unwrap().as_celsius(),
+        200.0
+    );
+    assert!(boards[0].inlet_fluid_temperature.is_none());
+    assert!(boards[1].board_temperature.is_none());
+    assert!(boards[1].outlet_chip_temperature.is_none());
 }
 
 #[test]
@@ -119,7 +148,7 @@ fn ordinary_hydro_chip_arrays_remain_chip_arrays() {
 
 #[test]
 fn invalid_sensor_readings_are_not_reported_as_cooling_proof() {
-    let value = json!({"chain": [{"index": 0, "temp_pcb": [0, -10, 170, "NaN"], "temp_chip": [0, "infinity"]}]});
+    let value = json!({"chain": [{"index": 0, "temp_pcb": [0, -10, 255, "NaN"], "temp_chip": [0, "infinity"]}]});
     let boards = hashboards(&value, "S21", HashAlgorithm::SHA256, &no_assumed_hardware());
     assert_eq!(boards[0].board_temperature, None);
     assert_eq!(boards[0].outlet_chip_temperature, None);
@@ -233,7 +262,7 @@ fn stopped_fans_remain_visible_and_hydro_has_no_invented_fans() {
 }
 
 #[test]
-fn actual_power_is_optional_zero_is_valid_and_conflicts_are_rejected() {
+fn reported_power_is_optional_zero_is_valid_and_conflicts_are_rejected() {
     assert_eq!(
         wattage(&row(S23_HYDRO_STANDARD_SYNTHETIC))
             .unwrap()
@@ -241,7 +270,20 @@ fn actual_power_is_optional_zero_is_valid_and_conflicts_are_rejected() {
         5000.0
     );
     assert_eq!(wattage(&json!({"power": 0})).unwrap().as_watts(), 0.0);
+    assert_eq!(
+        wattage_source(&json!({"power": 0})).as_deref(),
+        Some("antminer.stats:power")
+    );
+    assert_eq!(
+        wattage_source(&json!({"modern": {"watt": 0}})).as_deref(),
+        Some("antminer.rpc.stats(new_api=true):watt")
+    );
+    assert_eq!(
+        wattage_source(&json!({"legacy": {"chain_power": "5000 W"}})).as_deref(),
+        Some("antminer.rpc.stats:chain_power")
+    );
     assert!(wattage(&json!({"power": 5000, "watt": 3500})).is_none());
+    assert!(wattage_source(&json!({"power": 5000, "watt": 3500})).is_none());
     assert!(wattage(&json!({"power": "NaN"})).is_none());
     assert!(wattage(&row(S21_PLUS_HYDRO_SYNTHETIC)).is_none());
 }
@@ -390,4 +432,201 @@ async fn malformed_modern_chain_is_not_reported_as_a_board() {
     assert!(data.hashboards.is_empty());
     assert!(data.fluid_temperature.is_none());
     assert!(data.average_temperature.is_none());
+}
+
+#[tokio::test]
+async fn captured_stock_hydro_web_fallback_preserves_actual_telemetry_for_both_backends() {
+    for (model, stats, summary, chips, rate, elapsed, watts, frequency, pcb, chip, fan_count) in [
+        (
+            AntMinerModel::S21XPHydro,
+            S21_XP_HYDRO_WEB_STATS_CAPTURED,
+            S21_XP_HYDRO_WEB_SUMMARY_CAPTURED,
+            160,
+            483.97925,
+            602533,
+            0.0,
+            495.0,
+            [52.0, 51.0, 51.0],
+            [63.0, 63.0, 63.0],
+            4,
+        ),
+        (
+            AntMinerModel::S21jXPHydro,
+            S21J_XP_HYDRO_WEB_STATS_CAPTURED,
+            S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED,
+            42,
+            503.57633,
+            602134,
+            6124.0,
+            581.0,
+            [50.0, 50.0, 50.0],
+            [59.0, 59.0, 60.0],
+            0,
+        ),
+        (
+            AntMinerModel::S23Hydro,
+            S23_HYDRO_WEB_STATS_CAPTURED,
+            S23_HYDRO_WEB_SUMMARY_CAPTURED,
+            84,
+            572.84556,
+            167430,
+            5525.0,
+            327.0,
+            [52.0, 52.0, 52.0],
+            [56.0, 55.0, 56.0],
+            0,
+        ),
+    ] {
+        let raw = row(stats);
+        for miner in [
+            Box::new(AntMinerV2020::new(
+                "127.0.0.1".parse().unwrap(),
+                model.clone(),
+            )) as Box<dyn Miner>,
+            Box::new(AntMinerV202307::new(
+                "127.0.0.1".parse().unwrap(),
+                model.clone(),
+            )) as Box<dyn Miner>,
+        ] {
+            // No RPC response: the captured dashboard is the only available
+            // route, as can occur with firewalled port 4028.
+            let mock = MockAPIClient::new(HashMap::from([
+                (
+                    MinerCommand::WebAPI {
+                        command: "stats",
+                        parameters: None,
+                    },
+                    serde_json::from_str(stats).unwrap(),
+                ),
+                (
+                    MinerCommand::WebAPI {
+                        command: "summary",
+                        parameters: None,
+                    },
+                    serde_json::from_str(summary).unwrap(),
+                ),
+            ]));
+            let mut collector = DataCollector::new_with_client(miner.as_ref(), &mock);
+            let data = miner.parse_data(collector.collect_all().await);
+            assert!(
+                (data.hashrate.unwrap().value - rate).abs() < 1e-8,
+                "{model}"
+            );
+            assert!(data.is_mining, "{model}");
+            assert_eq!(data.uptime.unwrap().as_secs(), elapsed, "{model}");
+            assert_eq!(data.wattage.unwrap().as_watts(), watts, "{model}");
+            assert_eq!(
+                data.wattage_source.as_deref(),
+                Some("antminer.cgi.stats:watt")
+            );
+            assert!(data.wattage_is_estimated.is_none());
+            assert_eq!(data.hashboards.len(), 3, "{model}");
+            assert_eq!(data.fans.len(), fan_count, "{model}");
+            assert!(data.fans.iter().all(|fan| fan.rpm.unwrap().as_rpm() == 0.0));
+            assert!(
+                data.messages.is_empty(),
+                "unused hydro fan status is not an error: {model}"
+            );
+            for (index, board) in data.hashboards.iter().enumerate() {
+                assert_eq!(board.position, index as u8);
+                assert_eq!(board.expected_chips, Some(chips));
+                assert_eq!(board.working_chips, Some(chips));
+                assert_eq!(
+                    board.chips.len(),
+                    chips as usize,
+                    "display padding must not add physical chips"
+                );
+                assert!(board.chips.iter().all(|chip| chip.working == Some(true)));
+                assert_eq!(board.board_temperature.unwrap().as_celsius(), pcb[index]);
+                assert_eq!(
+                    board.outlet_chip_temperature.unwrap().as_celsius(),
+                    chip[index]
+                );
+                assert_eq!(board.frequency.unwrap().as_megahertz(), frequency);
+                assert_eq!(board.serial_number.as_deref(), Some("REDACTED-SERIAL"));
+                assert_eq!(board.active, Some(true));
+                assert!(board.inlet_fluid_temperature.is_none());
+                assert!(board.outlet_fluid_temperature.is_none());
+                assert!(
+                    (board.expected_hashrate.as_ref().unwrap().value
+                        - raw["chain"][index]["rate_ideal"].as_f64().unwrap() / 1000.0)
+                        .abs()
+                        < 1e-8
+                );
+                assert!(
+                    (board.hashrate.as_ref().unwrap().value
+                        - raw["chain"][index]["rate_real"].as_f64().unwrap() / 1000.0)
+                        .abs()
+                        < 1e-8
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn captured_legacy_hydro_chip_status_padding_is_not_extra_hardware() {
+    for (model, fixture, count) in [
+        (
+            AntMinerModel::S21XPHydro,
+            S21_XP_HYDRO_RPC_STATS_CAPTURED,
+            160,
+        ),
+        (
+            AntMinerModel::S21jXPHydro,
+            S21J_XP_HYDRO_RPC_STATS_CAPTURED,
+            42,
+        ),
+        (AntMinerModel::S23Hydro, S23_HYDRO_RPC_STATS_CAPTURED, 84),
+    ] {
+        let hardware = MinerHardware::from(model.clone());
+        let boards = hashboards(
+            &row(fixture),
+            &model.to_string(),
+            HashAlgorithm::SHA256,
+            &hardware,
+        );
+        assert_eq!(boards.len(), 3);
+        assert_eq!(
+            fans(&row(fixture)).len(),
+            if model == AntMinerModel::S21XPHydro {
+                4
+            } else {
+                0
+            }
+        );
+        for board in boards {
+            assert_eq!(board.expected_chips, Some(count));
+            assert_eq!(board.working_chips, Some(count));
+            assert_eq!(board.chips.len(), count as usize);
+        }
+    }
+}
+
+#[test]
+fn captured_response_mutations_keep_real_failures_and_zero_chip_counts_visible() {
+    let mut captured = row(S21J_XP_HYDRO_WEB_STATS_CAPTURED);
+    captured["chain"][0]["asic_num"] = json!(0);
+    captured["chain"][0]["rate_real"] = json!(0);
+    captured["chain"][0]["asic"] = json!(format!("x{}--", "o".repeat(41)));
+    let hardware = MinerHardware::from(AntMinerModel::S21jXPHydro);
+    let boards = hashboards(&captured, "S21jXPHydro", HashAlgorithm::SHA256, &hardware);
+    assert_eq!(boards[0].working_chips, Some(0));
+    assert_eq!(boards[0].active, Some(false));
+    assert_eq!(boards[0].chips.len(), 42);
+    assert_eq!(boards[0].chips[0].working, Some(false));
+    assert_eq!(boards[0].chips[1].working, Some(true));
+    captured["elapsed"] = json!("NaN");
+    assert!(uptime(&captured).is_none());
+    let mut summary: Value = serde_json::from_str(S23_HYDRO_WEB_SUMMARY_CAPTURED).unwrap();
+    summary["SUMMARY"][0]["status"][0] =
+        json!({"status": "W", "code": 12, "msg": "Reduced hashrate"});
+    let errors = messages(&summary);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, 12);
+    assert_eq!(errors[0].timestamp, 1791401146);
+    assert_eq!(
+        errors[0].severity,
+        asic_rs_core::data::message::MessageSeverity::Warning
+    );
 }

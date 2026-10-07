@@ -155,7 +155,7 @@ def extract_fn_body(block: str, method: str) -> str | None:
 def iter_impl_blocks(text: str) -> tuple[tuple[str, str, str], ...]:
     blocks: list[tuple[str, str, str]] = []
     pattern = re.compile(
-        r"\bimpl\s+(?P<trait>[A-Za-z_][A-Za-z0-9_]*)\s+for\s+"
+        r"\bimpl\s+(?:[A-Za-z_][A-Za-z0-9_]*::)*(?P<trait>[A-Za-z_][A-Za-z0-9_]*)\s+for\s+"
         r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s*\{"
     )
 
@@ -195,20 +195,26 @@ def collect_backend_supports() -> dict[str, dict[str, str]]:
     return supports
 
 
-def parse_display_string(path: Path) -> str | None:
+def parse_display_string(path: Path, target: str | None = None) -> str | None:
     if not path.exists():
         return None
 
-    match = re.search(r'write!\(\s*f\s*,\s*"([^"]+)"\s*\)', read_text(path))
-    return match.group(1) if match else None
+    for trait, impl_target, block in iter_impl_blocks(read_text(path)):
+        if trait != "Display" or target is not None and impl_target != target:
+            continue
+        match = re.search(
+            r'(?:write!\(\s*f\s*,\s*|f\.write_str\(\s*)"([^"]+)"\s*\)',
+            block,
+        )
+        if match:
+            return match.group(1)
+    return None
 
 
 def parse_make_crate_names(firmware_rs: Path) -> tuple[str, ...]:
     text = read_text(firmware_rs)
-    names = re.findall(r"asic_rs_makes_([A-Za-z0-9_]+)::make::", text)
-    names.extend(
-        re.findall(r"asic_rs_makes_([A-Za-z0-9_]+)::\{[^}]*\bmake::", text, flags=re.S)
-    )
+    # Flat backends can import a model directly without importing its make.
+    names = re.findall(r"asic_rs_makes_([A-Za-z0-9_]+)::", text)
     return tuple(dict.fromkeys(names))
 
 
@@ -227,25 +233,59 @@ def make_display_names(make_crates: tuple[str, ...]) -> str:
 def concrete_backend_structs(
         firmware_crate: Path, supports: dict[str, dict[str, str]]
 ) -> list[str]:
-    backend_dir = firmware_crate / "src" / "backends"
+    backend_dir = firmware_crate / "src"
     if not backend_dir.exists():
         return []
 
     structs: list[str] = []
     for path in sorted(backend_dir.rglob("*.rs")):
-        if path == backend_dir / "mod.rs":
-            continue
-
         text = read_text(path)
+        validated = {target for trait, target, _ in iter_impl_blocks(text) if trait == "Validate"}
         for match in re.finditer(
-                r"\bpub(?:\(crate\))?\s+struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{",
+                r"\bpub(?:\(crate\))?\s+struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*[{;]",
                 text,
         ):
             name = match.group(1)
-            if name in supports:
+            if name in validated:
                 structs.append(name)
 
     return sorted(set(structs), key=str.casefold)
+
+
+def backend_firmware_type(text: str, backend: str) -> str | None:
+    """Use the backend's own identity, including delegated firmware overrides."""
+    for match in re.finditer(rf"\bimpl\s+{re.escape(backend)}\s*\{{", text):
+        open_brace = match.end() - 1
+        block = text[open_brace + 1: find_matching_brace(text, open_brace)]
+        override = re.search(r"\bdevice_info\.firmware\s*=\s*([A-Za-z_][A-Za-z0-9_]*)", block)
+        if override:
+            return override.group(1)
+        constructor = re.search(
+            r"\bDeviceInfo::new\s*\(\s*[^,]+,\s*([A-Za-z_][A-Za-z0-9_]*)", block
+        )
+        if constructor:
+            return constructor.group(1)
+    for trait, target, block in iter_impl_blocks(text):
+        if trait == "Validate" and target == backend:
+            match = re.search(r"\btype\s+Firmware\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*;", block)
+            if match:
+                return match.group(1)
+    return None
+
+
+def backend_identity(crate: Path, backend: str, fallback_make: str, fallback_firmware: str) -> tuple[str, str]:
+    sources = [(path, read_text(path)) for path in sorted((crate / "src").rglob("*.rs"))]
+    for source, text in sources:
+        firmware_type = backend_firmware_type(text, backend)
+        if firmware_type is None:
+            continue
+        for firmware_source, _ in sources:
+            display = parse_display_string(firmware_source, firmware_type)
+            if display:
+                make_crates = parse_make_crate_names(firmware_source) or parse_make_crate_names(source)
+                make = make_display_names(make_crates) if make_crates else fallback_make
+                return make, display
+    return fallback_make, fallback_firmware
 
 
 def collect_support_rows() -> tuple[SupportRow, ...]:
@@ -261,12 +301,13 @@ def collect_support_rows() -> tuple[SupportRow, ...]:
         firmware = parse_display_string(firmware_rs) or crate.name
 
         for backend in concrete_backend_structs(crate, supports):
+            backend_make, backend_firmware = backend_identity(crate, backend, make, firmware)
             values = {
                 trait: supports.get(backend, {}).get(trait, "No")
                 for trait, _, _ in SUPPORT_COLUMNS
             }
             rows.append(
-                SupportRow(make=make, firmware=firmware, backend=backend, support=values)
+                SupportRow(make=backend_make, firmware=backend_firmware, backend=backend, support=values)
             )
 
     return tuple(
@@ -510,7 +551,7 @@ def build_markdown() -> str:
                 [
                     "# Supported Devices",
                     (
-                        "<!-- Generated by scripts/generate_supported_devices.py; "
+                        "<!-- Generated by scripts/docs/gen_supported_devices.py; "
                         "do not edit manually. -->"
                     ),
                     (

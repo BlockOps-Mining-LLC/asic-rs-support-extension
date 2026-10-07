@@ -1,15 +1,16 @@
 // Support Extension additions: conservative stock Bitmain telemetry parsing.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::BTreeSet, str::FromStr};
+use std::{collections::BTreeSet, str::FromStr, time::Duration};
 
 use asic_rs_core::data::{
-    board::BoardData,
+    board::{BoardData, ChipData},
     collector::{DataExtractor, DataLocation, get_by_pointer},
     command::MinerCommand,
     device::{HashAlgorithm, MinerHardware},
     fan::FanData,
     hashrate::{HashRate, HashRateUnit},
+    message::{MessageSeverity, MinerMessage},
 };
 use measurements::{AngularVelocity, Frequency, Power, Temperature};
 use serde_json::{Value, json};
@@ -22,7 +23,7 @@ pub(super) fn number(value: &Value) -> Option<f64> {
 }
 
 fn temperature(value: &Value) -> Option<f64> {
-    number(value).filter(|value| *value > 0.0 && *value <= 150.0)
+    number(value).filter(|value| *value > 0.0 && *value <= 200.0)
 }
 
 fn temperatures(value: Option<&Value>) -> Vec<f64> {
@@ -92,7 +93,7 @@ pub(super) fn extract_stats<'a>(value: &'a Value, _key: Option<&str>) -> Option<
 }
 
 pub(super) fn stats_locations() -> Vec<DataLocation> {
-    [(None, "legacy"), (Some(json!({"new_api": true})), "modern")]
+    let mut locations = [(None, "legacy"), (Some(json!({"new_api": true})), "modern")]
         .into_iter()
         .map(|(parameters, tag)| {
             (
@@ -107,7 +108,21 @@ pub(super) fn stats_locations() -> Vec<DataLocation> {
                 },
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // The modern stock dashboard exposes this same aggregate over HTTP, even
+    // when its cgminer RPC listener is unavailable (as used by native pyasic).
+    locations.push((
+        MinerCommand::WebAPI {
+            command: "stats",
+            parameters: None,
+        },
+        DataExtractor {
+            func: extract_stats,
+            key: None,
+            tag: Some("web"),
+        },
+    ));
+    locations
 }
 
 pub(super) fn rate_locations() -> Vec<DataLocation> {
@@ -127,9 +142,14 @@ pub(super) fn rate_locations() -> Vec<DataLocation> {
 }
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
-    [value.get("modern"), value.get("legacy"), Some(value)]
-        .into_iter()
-        .flatten()
+    [
+        value.get("modern"),
+        value.get("web"),
+        value.get("legacy"),
+        Some(value),
+    ]
+    .into_iter()
+    .flatten()
 }
 
 fn rate_unit(value: Option<&Value>, algo: HashAlgorithm) -> Option<HashRateUnit> {
@@ -190,6 +210,7 @@ fn rate_window(
 pub(super) fn current_rate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     for row in [
         value.get("modern"),
+        value.get("web"),
         value.get("legacy"),
         value.get("summary"),
         Some(value),
@@ -215,6 +236,7 @@ pub(super) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     // safely repair it. Missing fields alone may fall back to an average.
     for row in [
         value.get("modern"),
+        value.get("web"),
         value.get("legacy"),
         value.get("summary"),
         Some(value),
@@ -231,6 +253,7 @@ pub(super) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     }
     for row in [
         value.get("modern"),
+        value.get("web"),
         value.get("legacy"),
         value.get("summary"),
         Some(value),
@@ -266,6 +289,97 @@ pub(super) fn expected_hashrate(value: &Value, algo: HashAlgorithm) -> Option<Ha
         None => return None,
     };
     make_rate(raw, unit, algo)
+}
+
+pub(super) fn uptime(value: &Value) -> Option<Duration> {
+    for row in rows(value) {
+        if let Some(raw) = row.get("elapsed").or_else(|| row.get("Elapsed")) {
+            let seconds = raw
+                .as_u64()
+                .or_else(|| raw.as_str()?.trim().parse::<u64>().ok())?;
+            return Some(Duration::from_secs(seconds));
+        }
+    }
+    None
+}
+
+pub(super) fn messages(value: &Value) -> Vec<MinerMessage> {
+    let timestamp = value
+        .pointer("/STATUS/when")
+        .or_else(|| value.pointer("/STATUS/0/When"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let statuses = value.pointer("/SUMMARY/0/status").unwrap_or(value);
+    statuses
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let status = item.get("status")?.as_str()?.trim().to_ascii_lowercase();
+            if status == "s" {
+                return None;
+            }
+            let text = item.get("msg").and_then(Value::as_str).unwrap_or("").trim();
+            let code = item.get("code").and_then(Value::as_u64).unwrap_or(0);
+            // The captured hydro dashboard leaves unused fan status blank. It is
+            // not a miner error and must not create an empty/"Unknown error" row.
+            if status.is_empty() && text.is_empty() && code == 0 {
+                return None;
+            }
+            let severity = match status.as_str() {
+                "e" => MessageSeverity::Error,
+                "w" => MessageSeverity::Warning,
+                _ => MessageSeverity::Info,
+            };
+            Some(MinerMessage::new(
+                timestamp,
+                code,
+                text.to_owned(),
+                severity,
+            ))
+        })
+        .collect()
+}
+
+fn chip_states(value: Option<&Value>, physical_count: Option<u16>) -> Vec<ChipData> {
+    let Some(raw) = value.and_then(Value::as_str) else {
+        return vec![];
+    };
+    let mut statuses = raw
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    // Stock cgminer exposes one character per chip; spacing groups chips.
+    // Reject an unknown layout instead of assigning invented chip positions.
+    if statuses
+        .iter()
+        .any(|character| !matches!(character, 'o' | 'O' | 'x' | 'X' | '-'))
+    {
+        return vec![];
+    }
+    if let Some(physical_count) = physical_count {
+        let count = physical_count as usize;
+        // Captured 42/84-chip boards pad their final display group with '-'.
+        // Remove only a proven empty tail, never working/failing chip data.
+        if statuses
+            .get(count..)
+            .is_some_and(|tail| tail.iter().all(|status| *status == '-'))
+        {
+            statuses.truncate(count);
+        }
+    }
+    statuses
+        .into_iter()
+        .enumerate()
+        .filter_map(|(position, status)| {
+            Some(ChipData {
+                position: u16::try_from(position).ok()?,
+                working: Some(matches!(status, 'o' | 'O')),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 fn compact_model(model: &str) -> String {
@@ -388,13 +502,31 @@ pub(super) fn hashboards(
                     algo,
                 )
             });
+            board.expected_hashrate = chain.get("rate_ideal").and_then(|value| {
+                make_rate(
+                    value,
+                    rate_unit(
+                        chain.get("rate_unit").or_else(|| row.get("rate_unit")),
+                        algo,
+                    )?,
+                    algo,
+                )
+            });
+            board.serial_number = chain
+                .get("sn")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
             board.working_chips = chain
                 .get("asic_num")
                 .and_then(number)
                 .filter(|value| value.fract() == 0.0 && *value >= 0.0 && *value <= u16::MAX as f64)
                 .map(|value| value as u16);
+            board.chips = chip_states(chain.get("asic"), board.expected_chips);
             board.frequency = chain
                 .get("frequency_mhz")
+                .or_else(|| chain.get("freq_avg"))
                 .and_then(number)
                 .filter(|value| *value > 0.0)
                 .map(Frequency::from_megahertz);
@@ -440,6 +572,7 @@ pub(super) fn hashboards(
             );
             board.hashrate = rate;
             board.working_chips = chips;
+            board.chips = chip_states(row.get(&format!("chain_acs{slot}")), board.expected_chips);
             board.active = board.hashrate.as_ref().map(|rate| rate.value > 0.0);
             let mut pcb = temperatures(row.get(&format!("temp_pcb{slot}")));
             if pcb.is_empty() {
@@ -488,6 +621,11 @@ pub(super) fn fans(value: &Value) -> Vec<FanData> {
                 })
         })
         .unwrap_or(value);
+    let count = row
+        .get("fan_num")
+        .and_then(number)
+        .filter(|value| value.fract() == 0.0 && *value >= 0.0 && *value <= i16::MAX as f64)
+        .map(|value| value as usize);
     let raw = if let Some(fans) = row.get("fan").and_then(Value::as_array) {
         fans.iter().enumerate().collect::<Vec<_>>()
     } else if let Some(row) = row.as_object() {
@@ -510,11 +648,16 @@ pub(super) fn fans(value: &Value) -> Vec<FanData> {
     };
     raw.into_iter()
         .filter_map(|(index, value)| {
+            let rpm = number(value).filter(|value| *value >= 0.0)?;
+            // Captured hydro RPC replies pad fan1..fan4 with zeros while
+            // fan_num is zero. Keep stopped fans inside the reported count,
+            // and never discard a contradictory positive RPM observation.
+            if count.is_some_and(|count| index >= count) && rpm == 0.0 {
+                return None;
+            }
             Some(FanData {
                 position: i16::try_from(index).ok()?,
-                rpm: Some(AngularVelocity::from_rpm(
-                    number(value).filter(|value| *value >= 0.0)?,
-                )),
+                rpm: Some(AngularVelocity::from_rpm(rpm)),
             })
         })
         .collect()
@@ -556,8 +699,16 @@ pub(super) fn is_mining(value: Option<&Value>, rate: Option<HashRate>) -> bool {
     rate.is_some_and(|rate| rate.value > 0.0)
 }
 
-pub(super) fn wattage(value: &Value) -> Option<Power> {
-    let row = rows(value).find(|row| {
+fn reported_power(value: &Value) -> Option<(Power, String)> {
+    let (row, route) = [
+        (value.get("modern"), "antminer.rpc.stats(new_api=true)"),
+        (value.get("web"), "antminer.cgi.stats"),
+        (value.get("legacy"), "antminer.rpc.stats"),
+        (Some(value), "antminer.stats"),
+    ]
+    .into_iter()
+    .filter_map(|(row, route)| Some((row?, route)))
+    .find(|(row, _)| {
         ["chain_power", "power", "Power", "watt"]
             .into_iter()
             .any(|key| row.get(key).is_some())
@@ -571,18 +722,28 @@ pub(super) fn wattage(value: &Value) -> Option<Power> {
         && let Some(watts) =
             number(&Value::String(raw.trim().to_owned())).filter(|value| *value >= 0.0)
     {
-        candidates.push(watts);
+        candidates.push((watts, "chain_power"));
     }
     for key in ["power", "Power", "watt"] {
         if let Some(value) = row.get(key).and_then(number).filter(|value| *value >= 0.0) {
-            candidates.push(value);
+            candidates.push((value, key));
         }
     }
-    let first = *candidates.first()?;
+    let (first, field) = *candidates.first()?;
     candidates
         .iter()
-        .all(|value| (*value - first).abs() <= first * 0.01 + 1.0)
-        .then_some(Power::from_watts(first))
+        .all(|(value, _)| (*value - first).abs() <= first * 0.01 + 1.0)
+        .then(|| (Power::from_watts(first), format!("{route}:{field}")))
+}
+
+pub(super) fn wattage(value: &Value) -> Option<Power> {
+    reported_power(value).map(|(power, _)| power)
+}
+
+pub(super) fn wattage_source(value: &Value) -> Option<String> {
+    // The API response proves where the reported number came from. It does
+    // not prove a PSU measurement or an estimate, so that flag remains unknown.
+    reported_power(value).map(|(_, source)| source)
 }
 
 pub(super) fn fluid_temperature(boards: &[BoardData], outlet: bool) -> Option<Temperature> {
