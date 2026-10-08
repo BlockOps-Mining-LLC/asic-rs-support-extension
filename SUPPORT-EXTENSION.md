@@ -46,9 +46,9 @@ automation for newly recognized hardware.
 
 ## Development coverage and device validation
 
-The current branch adds the following source implementations. These are not
-included in the published `0.8.5.post2` wheels and are not a claim of complete
-fleet compatibility.
+The `0.8.5.post3` package includes the following implementations. Coverage is
+limited to the evidence listed below and does not establish complete fleet
+compatibility.
 
 | Firmware or model | Added telemetry | Evidence and remaining checks |
 | --- | --- | --- |
@@ -71,14 +71,14 @@ All newly added firmware backends are read-only and reject arbitrary commands,
 configuration changes and controls. Their authenticated POSTs perform vendor
 login/read operations only. Existing stock controls are unchanged. Remaining
 validation is planned against the other farm networks before broader
-compatibility claims or a new binary release.
+compatibility claims.
 
 ## Using and contributing
 
 The fork works independently as a Rust library with Python and Go bindings.
-The Python distribution is `pyasic-rs-support-extension==0.8.5.post2`; its public
+The Python distribution is `pyasic-rs-support-extension==0.8.5.post3`; its public
 import remains `pyasic_rs`. Install the wheel for your platform from the
-[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post2)
+[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post3)
 with pip. Do not install upstream `pyasic-rs` into the same environment: both
 distributions own the same import namespace.
 
@@ -129,5 +129,7 @@ from earlier candidates do not validate a newer revision. Parser regression
 tests cover sanitized live captures and synthetic failure cases. The live
 evidence is limited to the models and firmware cohorts listed above and does
 not establish firmware control support or complete fleet compatibility.
-Full Go/FFI integration requires Linux validation. No new wheels have been
-published for these source changes; the published pin remains `0.8.5.post2`.
+Full Go/FFI integration is validated by the Linux workflow. The binary release
+workflow tests each platform wheel and CPython ABI compatibility before
+publication. The release manifest records the exact source revision and
+checksums of those binaries.
