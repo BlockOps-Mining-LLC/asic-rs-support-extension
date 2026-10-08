@@ -393,6 +393,21 @@ func TestAlgorithmDefaultsAndHardwareHelpers(t *testing.T) {
 	}
 }
 
+func TestBlake2bReportedMegaHashRateConvertsToTeraHash(t *testing.T) {
+	var rate HashRate
+	if err := json.Unmarshal([]byte(`{"value":11000000,"unit":"MH/s","algo":"Blake2b"}`), &rate); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := rate.IntoDefaultUnit()
+	if err != nil || normalized.Value != 11 || normalized.Unit != HashRateUnitTeraHash || normalized.Algo != HashAlgorithmBlake2b {
+		t.Fatalf("reported SC5Pro rate: %+v, %v", normalized, err)
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil || !strings.Contains(string(raw), `"algo":"Blake2b"`) {
+		t.Fatalf("normalized algorithm identity: %s, %v", raw, err)
+	}
+}
+
 func TestPowerProvenancePreservesReportedZeroAndUnknown(t *testing.T) {
 	var data MinerData
 	if err := json.Unmarshal([]byte(`{"wattage":0,"wattage_source":"vendor.brief","wattage_is_estimated":true,"wattage_firmware_source":"PSU","wattage_indicator":0,"reported_max_temperature":70}`), &data); err != nil {
@@ -407,7 +422,6 @@ func TestPowerProvenancePreservesReportedZeroAndUnknown(t *testing.T) {
 	}
 }
 
-// Support Extension: unconfirmed or overflowing counts are not valid totals.
 func TestHardwareTotalChipsPreservesUnknownAndOverflow(t *testing.T) {
 	first, second, maximum := uint16(78), uint16(80), uint16(65535)
 	for _, hardware := range []MinerHardware{
@@ -488,7 +502,6 @@ func TestStructuredTelemetryModels(t *testing.T) {
 	}
 }
 
-// Support Extension: preserve separate coolant fields and older snapshots.
 func TestBoardCoolantTelemetry(t *testing.T) {
 	var board BoardData
 	if err := json.Unmarshal([]byte(`{"position":0,"board_temperature":61,"inlet_fluid_temperature":34,"outlet_fluid_temperature":42}`), &board); err != nil {

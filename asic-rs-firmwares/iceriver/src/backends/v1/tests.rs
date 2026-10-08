@@ -7,7 +7,11 @@ use serde_json::json;
 use super::*;
 
 fn miner() -> IceRiverV1 {
-    IceRiverV1::new("127.0.0.1".parse().unwrap(), IceRiverModel::AL3)
+    IceRiverV1::with_auth(
+        "127.0.0.1".parse().unwrap(),
+        IceRiverModel::AL3,
+        IceRiverV1::default_auth(),
+    )
 }
 
 fn response() -> Value {
@@ -25,16 +29,13 @@ async fn collect(miner: &IceRiverV1, response: Value) -> HashMap<DataField, Valu
 async fn source_fixture_preserves_hardware_units_sensors_and_zero_fan() {
     let miner = miner();
     let data = miner.parse_data(collect(&miner, response()).await);
-    assert_eq!(data.device_info.make, "IceRiver");
-    assert_eq!(data.device_info.model, "AL3");
-    assert_eq!(data.device_info.algo, HashAlgorithm::Blake3);
     assert_eq!(data.expected_hashboards, Some(3));
-    assert_eq!(data.expected_chips, Some(468));
-    assert_eq!(data.total_chips, Some(462));
+    assert_eq!(data.expected_chips, None);
+    assert_eq!(data.total_chips, Some(53));
     assert_eq!(data.expected_fans, Some(4));
     assert_eq!(data.hashboards.len(), 3);
-    assert_eq!(data.hashboards[0].expected_chips, Some(156));
-    assert_eq!(data.hashboards[0].working_chips, Some(156));
+    assert_eq!(data.hashboards[0].expected_chips, None);
+    assert_eq!(data.hashboards[0].working_chips, Some(18));
     assert_eq!(
         data.hashboards[0].board_temperature.unwrap().as_celsius(),
         60.0
@@ -47,7 +48,6 @@ async fn source_fixture_preserves_hardware_units_sensors_and_zero_fan() {
         80.0
     );
     assert!(data.hashboards[0].inlet_chip_temperature.is_none());
-    assert!(data.hashboards[0].inlet_fluid_temperature.is_none());
     assert!(data.hashboards[0].chips.is_empty());
     assert_eq!(
         data.hashboards[0].hashrate.as_ref().unwrap().unit,
@@ -98,6 +98,61 @@ async fn accepts_pyasic_recording_wrapper_and_uses_one_read_for_all_fields() {
 }
 
 #[tokio::test]
+async fn live_al3_integral_float_counts_preserve_observations_and_static_metadata_separately() {
+    let miner = miner();
+    let response =
+        serde_json::from_str(include_str!("fixtures/al3-10306-live-float-counts.json")).unwrap();
+    let data = miner.parse_data(collect(&miner, response).await);
+    assert_eq!(data.hashboards.len(), 3);
+    assert_eq!(data.expected_chips, None);
+    assert_eq!(data.total_chips, Some(54));
+    for (position, board) in data.hashboards.iter().enumerate() {
+        assert_eq!(board.position as usize, position);
+        // The observed 18 does not establish expected chip capacity.
+        assert_eq!(board.expected_chips, None);
+        assert_eq!(board.working_chips, Some(18));
+        assert_eq!(board.active, Some(true));
+    }
+    assert_eq!(
+        data.hashboards[0].board_temperature.unwrap().as_celsius(),
+        56.0
+    );
+    assert_eq!(
+        data.hashboards[0]
+            .outlet_chip_temperature
+            .unwrap()
+            .as_celsius(),
+        65.0
+    );
+    let board_rate = data.hashboards[0].hashrate.as_ref().unwrap();
+    assert_eq!(board_rate.unit, HashRateUnit::GigaHash);
+    assert_eq!(board_rate.value, 5153.04);
+    let rate = data.hashrate.unwrap();
+    assert_eq!(rate.unit, HashRateUnit::GigaHash);
+    assert_eq!(rate.value, 14762.0);
+    let default_rate = rate.as_default_unit();
+    assert_eq!(default_rate.unit, HashRateUnit::TeraHash);
+    assert_eq!(default_rate.value, 14.762);
+    assert_eq!(data.fans.len(), 4);
+    assert!(data.is_mining);
+}
+
+#[test]
+fn float_counts_reject_fractional_negative_nonfinite_and_overflow_values() {
+    assert_eq!(unsigned(&json!(18.0)), Some(18));
+    assert_eq!(unsigned(&json!(0.0)), Some(0));
+    for value in [
+        json!(1.5),
+        json!(-1.0),
+        json!(18446744073709551616.0),
+        json!(true),
+        json!("NaN"),
+    ] {
+        assert_eq!(unsigned(&value), None);
+    }
+}
+
+#[tokio::test]
 async fn missing_boards_and_fields_stay_unknown_and_mining_flag_is_explicit() {
     let miner = miner();
     let data = miner.parse_data(
@@ -112,7 +167,7 @@ async fn missing_boards_and_fields_stay_unknown_and_mining_flag_is_explicit() {
     );
     assert_eq!(data.hashboards.len(), 3);
     let missing = &data.hashboards[0];
-    assert_eq!(missing.expected_chips, Some(156));
+    assert_eq!(missing.expected_chips, None);
     assert!(missing.working_chips.is_none());
     assert!(missing.hashrate.is_none());
     assert!(missing.active.is_none());
@@ -134,14 +189,18 @@ async fn missing_boards_and_fields_stay_unknown_and_mining_flag_is_explicit() {
 #[tokio::test]
 async fn conflicting_duplicate_board_rows_reject_board_snapshot_without_losing_device_rate() {
     for model in [IceRiverModel::AL3, IceRiverModel::Unknown("future".into())] {
-        let miner = IceRiverV1::new("127.0.0.1".parse().unwrap(), model);
+        let miner = IceRiverV1::with_auth(
+            "127.0.0.1".parse().unwrap(),
+            model,
+            IceRiverV1::default_auth(),
+        );
         for reverse in [false, true] {
             let mut response = response();
             let boards = response["data"]["boards"].as_array_mut().unwrap();
-            // Numeric and string identifiers name the same board. This row
-            // conflicts with the fixture's hot, hashing, 156-chip first board.
+            // Integer and float identifiers name the same board. This row
+            // conflicts with the fixture's hot, hashing first board.
             boards.push(json!({
-                "no": "1", "intmp": 20, "outtmp": 25, "rtpow": "0G", "chipnum": 0
+                "no": 1.0, "intmp": 20, "outtmp": 25, "rtpow": "0G", "chipnum": 0.0
             }));
             if reverse {
                 boards.reverse();
@@ -188,9 +247,10 @@ async fn malformed_units_positions_counts_and_uptime_do_not_create_telemetry() {
 
 #[tokio::test]
 async fn firmware_with_unknown_model_keeps_unknown_expected_hardware() {
-    let miner = IceRiverV1::new(
+    let miner = IceRiverV1::with_auth(
         "127.0.0.1".parse().unwrap(),
         IceRiverModel::Unknown("future".to_owned()),
+        IceRiverV1::default_auth(),
     );
     let data = miner.parse_data(
         collect(

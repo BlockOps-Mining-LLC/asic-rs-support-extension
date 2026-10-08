@@ -40,7 +40,6 @@ pub(crate) fn model_from_userpanel(response: &Value) -> Result<IceRiverModel, Mo
         .and_then(Value::as_str)
         .filter(|version| !version.trim().is_empty())
         .ok_or(ModelSelectionError::UnexpectedModelResponse)?;
-    // Established vendor software suffix: *_KS5miner or *_10306_miner.
     let parts = version.split('_').collect::<Vec<_>>();
     let last = *parts
         .last()

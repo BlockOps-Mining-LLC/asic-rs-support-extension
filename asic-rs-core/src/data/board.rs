@@ -1,4 +1,3 @@
-// Modified for Support Extension: preserve hydro coolant separately from board/chip sensors.
 use std::fmt::Display;
 
 use measurements::{Frequency, Temperature, Voltage};
@@ -179,7 +178,7 @@ impl Display for MinerControlBoard {
 }
 
 #[cfg(test)]
-mod support_extension_tests {
+mod tests {
     use super::*;
 
     #[test]

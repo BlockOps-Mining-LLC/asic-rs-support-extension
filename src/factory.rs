@@ -597,8 +597,9 @@ impl MinerFactory {
         self
     }
 
-    /// Set construction credentials by the exact Display name of a registered
-    /// firmware. Discovery requests remain unauthenticated; credentials are
+    /// Set construction credentials by the Display name of a registered
+    /// firmware, accepting the legacy Goldshell read-only name as an alias.
+    /// Discovery requests remain unauthenticated; credentials are
     /// supplied only to the identified firmware's `build_miner` method.
     ///
     /// Unknown names are rejected without including caller input in the error.
@@ -615,6 +616,16 @@ impl MinerFactory {
             .iter()
             .map(|firmware| firmware.to_string())
             .find(|name| name == firmware_name)
+            .or_else(|| {
+                (firmware_name == "Goldshell Stock (read-only)")
+                    .then(|| {
+                        registry
+                            .iter()
+                            .map(|firmware| firmware.to_string())
+                            .find(|name| name == "Goldshell Stock")
+                    })
+                    .flatten()
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!("Firmware is not registered for discovery authentication")
             })?;

@@ -313,9 +313,12 @@ impl<
         let best_share = self.parse_best_share(&data);
         let session_best_share = self.parse_session_best_share(&data);
         let device_info = self.get_device_info();
+        let expected_hashboards = self
+            .parse_expected_hashboards(&data)
+            .or_else(|| device_info.hardware.board_count());
 
         // computed fields
-        let total_chips = observed_chip_total(&hashboards, device_info.hardware.board_count());
+        let total_chips = observed_chip_total(&hashboards, expected_hashboards);
         let average_temperature = {
             let board_temps = hashboards
                 .iter()
@@ -361,7 +364,7 @@ impl<
             control_board_version,
 
             // Hashboard information
-            expected_hashboards: device_info.hardware.board_count(),
+            expected_hashboards,
             hashboards,
             hashrate,
             expected_hashrate,
@@ -614,6 +617,11 @@ pub trait GetControlBoardVersion: CollectData {
 // Hashboards
 #[async_trait]
 pub trait GetHashboards: CollectData {
+    /// Firmware-reported expected board count, separate from the observed rows.
+    /// When absent, the normal model hardware metadata remains the fallback.
+    fn parse_expected_hashboards(&self, _data: &HashMap<DataField, Value>) -> Option<u8> {
+        None
+    }
     /// A whole-miner maximum explicitly reported alongside board telemetry.
     /// Missing values remain unknown and are never inferred from averages.
     #[allow(unused_variables)]

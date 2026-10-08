@@ -18,7 +18,7 @@ use super::{
     pool::PoolGroupData,
 };
 use crate::data::{
-    deserialize::deserialize_macaddr,
+    deserialize::{deserialize_macaddr, deserialize_temperature},
     serialize::{serialize_macaddr, serialize_power, serialize_temperature},
 };
 
@@ -182,7 +182,11 @@ pub struct MinerData {
     pub average_temperature: Option<Temperature>,
     /// Maximum temperature explicitly reported for the whole miner, in Celsius.
     /// This does not identify a board/chip sensor or replace board measurements.
-    #[serde(default, serialize_with = "serialize_temperature")]
+    #[serde(
+        default,
+        serialize_with = "serialize_temperature",
+        deserialize_with = "deserialize_temperature"
+    )]
     #[ts(type = "number | null")]
     #[cfg_attr(feature = "python", pydantic(default = None))]
     pub reported_max_temperature: Option<Temperature>,

@@ -9,9 +9,11 @@ import gen_supported_devices as generator
 
 class SupportedDevicesGeneratorTests(unittest.TestCase):
     def test_flat_and_delegated_read_only_backends_have_distinct_rows(self):
-        rows = {row.backend: row for row in generator.collect_support_rows()}
+        support_rows = generator.collect_support_rows()
+        rows = {row.backend: row for row in support_rows}
+        self.assertEqual(len(rows), len(support_rows))
         expected = {
-            "GoldshellV1": ("Goldshell", "Goldshell Stock (read-only)"),
+            "GoldshellV1": ("Goldshell", "Goldshell Stock"),
             "InnosiliconV1": ("Innosilicon", "Innosilicon Stock (read-only)"),
             "KaonsuMiner": ("AntMiner", "KaonSu"),
             "HiveonMiner": ("AntMiner", "Hiveon"),

@@ -1,4 +1,3 @@
-// Support Extension additions: read-only Hiveon cgminer telemetry.
 // SPDX-License-Identifier: Apache-2.0
 // Contract source: native pyasic HiveonModern and its exact VERSION/Type mapping.
 
@@ -79,7 +78,7 @@ fn model_from_version(value: &Value) -> Result<AntMinerModel, ModelSelectionErro
         // evidence for any stock algorithm or board/chip template.
         return Ok(AntMinerModel::Unknown("Hiveon".to_owned()));
     };
-    AntMinerModel::from_str(raw)
+    AntMinerModel::from_str(&raw.to_uppercase())
 }
 
 #[async_trait]
@@ -350,7 +349,7 @@ mod tests {
         );
         assert_eq!(
             model_from_version(&json!({"VERSION": [{"Type": "Antminer S99 HIVEON"}]})).unwrap(),
-            AntMinerModel::Unknown("Antminer S99 HIVEON".to_owned())
+            AntMinerModel::Unknown("ANTMINER S99 HIVEON".to_owned())
         );
         assert!(!HiveonFirmware.identify_rpc("ANTMINER S19"));
         assert!(HiveonFirmware.identify_rpc("ANTMINER S19 HIVEON"));
@@ -424,5 +423,30 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn captured_hiveon_reports_total_power_with_raw_field_provenance() {
+        use crate::test::json::v2023_07::HIVEON_S19X88_STATS_CAPTURED;
+        let miner = HiveonMiner::new("127.0.0.1".parse().unwrap(), AntMinerModel::S19NoPIC);
+        let raw: Value = serde_json::from_str(HIVEON_S19X88_STATS_CAPTURED).unwrap();
+        let mock = MockAPIClient::new(HashMap::from([(
+            MinerCommand::RPC {
+                command: "stats",
+                parameters: None,
+            },
+            raw,
+        )]));
+        let mut collector = DataCollector::new_with_client(&miner, &mock);
+        let data = miner.parse_data(collector.collect_all().await);
+        assert_eq!(data.wattage.unwrap().as_watts(), 1345.0);
+        assert_eq!(
+            data.wattage_source.as_deref(),
+            Some("hiveon.rpc.stats:total_power")
+        );
+        // The field is firmware-reported power. Its producer does not establish
+        // whether this is measured or estimated, and board sums round differently.
+        assert!(data.wattage_is_estimated.is_none());
+        assert!(!miner.supports_set_power_limit());
     }
 }

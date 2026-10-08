@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-use crate::{backend::KaonsuMiner, telemetry::payload, web::KaonsuWebAPI};
+use crate::{backends::v1::KaonsuMiner, telemetry::payload, web::KaonsuWebAPI};
 use asic_rs_core::{
     data::command::DiscoveryCommand,
     discovery::{HTTP_WEB_ROOT, RPC_VERSION},
@@ -9,19 +9,20 @@ use asic_rs_core::{
         entry::FirmwareEntry,
         firmware::MinerFirmware,
         identification::{FirmwareIdentification, WebResponse},
+        make::MinerMake,
         miner::{HasDefaultAuth, Miner, MinerAuth},
     },
 };
-use asic_rs_makes_antminer::models::AntMinerModel;
+use asic_rs_makes_antminer::{make::AntMinerMake, models::AntMinerModel};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::{fmt::Display, net::IpAddr, str::FromStr};
+use std::{fmt::Display, net::IpAddr};
 
 #[derive(Default, Debug)]
 pub struct KaonsuFirmware;
 impl Display for KaonsuFirmware {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("KaonSu")
+        write!(f, "KaonSu")
     }
 }
 impl DiscoveryCommands for KaonsuFirmware {
@@ -45,13 +46,18 @@ impl FirmwareIdentification for KaonsuFirmware {
         marker(response)
     }
     fn identify_web(&self, response: &WebResponse<'_>) -> bool {
-        // The sanitized authentication fixture proves MaraFW's realm.
-        // MD5 and a KS model alone are not firmware identification.
+        // MD5 authentication and an Antminer model also occur on stock firmware.
         marker(response.auth_header) || marker(response.body)
     }
 }
 pub(crate) fn model_from_overview(value: &Value) -> Result<AntMinerModel, ModelSelectionError> {
     let overview = payload(value, None).ok_or(ModelSelectionError::UnexpectedModelResponse)?;
+    let parse = |model: &str| {
+        AntMinerMake::parse_model(model.to_uppercase()).map(|parsed| match parsed {
+            AntMinerModel::Unknown(_) => AntMinerModel::Unknown(model.to_owned()),
+            known => known,
+        })
+    };
     let model = ["model_extended", "model"]
         .into_iter()
         .find_map(|key| {
@@ -62,7 +68,23 @@ pub(crate) fn model_from_overview(value: &Value) -> Result<AntMinerModel, ModelS
                 .filter(|model| !model.is_empty())
         })
         .ok_or(ModelSelectionError::UnexpectedModelResponse)?;
-    AntMinerModel::from_str(model)
+    let extended = parse(model)?;
+    if let Some(base) = overview
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(parse)
+        .transpose()?
+        .filter(|model| !matches!(model, AntMinerModel::Unknown(_)))
+    {
+        // model_extended can append a capacity label; use the exact base identity.
+        if !matches!(extended, AntMinerModel::Unknown(_)) && extended != base {
+            return Err(ModelSelectionError::UnexpectedModelResponse);
+        }
+        return Ok(base);
+    }
+    Ok(extended)
 }
 fn matches_brief_contract(value: &Value) -> bool {
     payload(value, None).is_some_and(|brief| {
@@ -82,8 +104,11 @@ fn matches_brief_contract(value: &Value) -> bool {
 }
 async fn read_identity(ip: IpAddr, auth: MinerAuth) -> Result<AntMinerModel, ModelSelectionError> {
     let api = KaonsuWebAPI::new(ip, auth);
-    // Both dedicated KaonSu paths must succeed with the evidenced schema.
-    // A bare model label from unrelated stock firmware cannot authorize it.
+    read_identity_with_api(&api).await
+}
+pub(crate) async fn read_identity_with_api(
+    api: &KaonsuWebAPI,
+) -> Result<AntMinerModel, ModelSelectionError> {
     let brief = api
         .get("brief")
         .await

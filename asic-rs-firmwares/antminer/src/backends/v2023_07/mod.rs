@@ -1,4 +1,3 @@
-// Support Extension modifications: stock telemetry schemas, sensor domains and observed mining state.
 use std::{collections::HashMap, fmt::Display, net::IpAddr, str::FromStr, time::Duration};
 
 use self::firmware::resolve_firmware_image;
@@ -491,7 +490,11 @@ impl GetHashboards for AntMinerV202307 {
 
 impl GetHashrate for AntMinerV202307 {
     fn parse_hashrate(&self, data: &HashMap<DataField, Value>) -> Option<HashRate> {
-        telemetry::hashrate(data.get(&DataField::Hashrate)?, self.device_info.algo)
+        telemetry::hashrate_for_model(
+            data.get(&DataField::Hashrate)?,
+            self.device_info.algo,
+            Some(&self.device_info.model),
+        )
     }
 }
 
@@ -507,7 +510,7 @@ impl GetExpectedHashrate for AntMinerV202307 {
 impl GetFans for AntMinerV202307 {
     fn parse_fans(&self, data: &HashMap<DataField, Value>) -> Vec<FanData> {
         data.get(&DataField::Fans)
-            .map(telemetry::fans)
+            .map(|value| telemetry::fans_for_model(value, Some(&self.device_info.model)))
             .unwrap_or_default()
     }
 }
@@ -538,10 +541,21 @@ impl GetIsMining for AntMinerV202307 {
     fn parse_is_mining(&self, data: &HashMap<DataField, Value>) -> bool {
         let field = data.get(&DataField::IsMining);
         let rate = field
-            .and_then(|value| telemetry::current_rate(value, self.device_info.algo))
+            .and_then(|value| {
+                telemetry::current_rate_for_model(
+                    value,
+                    self.device_info.algo,
+                    Some(&self.device_info.model),
+                )
+            })
             .or_else(|| {
-                data.get(&DataField::Hashrate)
-                    .and_then(|value| telemetry::current_rate(value, self.device_info.algo))
+                data.get(&DataField::Hashrate).and_then(|value| {
+                    telemetry::current_rate_for_model(
+                        value,
+                        self.device_info.algo,
+                        Some(&self.device_info.model),
+                    )
+                })
             });
         telemetry::is_mining(field, rate)
     }
@@ -1148,6 +1162,7 @@ mod tests {
     /// only the S21 fixture does -- so the GH/s fallback carries these models.
     #[tokio::test]
     async fn scrypt_models_from_live_hardware() {
+        // Explicit CHAIN AVG HASHRATE values determine board-rate units and precision.
         for (model, summary, stats, hashrate, expected, board0, chips) in [
             (
                 AntMinerModel::L9,
@@ -1155,7 +1170,7 @@ mod tests {
                 L9_STATS,
                 11.48,
                 17.03,
-                5.659831296,
+                5.65983,
                 [110u16, 110, 25],
             ),
             (
@@ -1164,7 +1179,7 @@ mod tests {
                 L11_STATS,
                 19.21,
                 20.52,
-                6.80496896,
+                6.80497,
                 [88, 88, 88],
             ),
         ] {

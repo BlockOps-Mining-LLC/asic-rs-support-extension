@@ -203,13 +203,12 @@ type ChipData struct {
 
 // BoardData is per-hashboard telemetry.
 type BoardData struct {
-	Position              uint8     `json:"position"`
-	Hashrate              *HashRate `json:"hashrate"`
-	ExpectedHashrate      *HashRate `json:"expected_hashrate"`
-	BoardTemperature      *float64  `json:"board_temperature"`
-	InletChipTemperature  *float64  `json:"inlet_chip_temperature"`
-	OutletChipTemperature *float64  `json:"outlet_chip_temperature"`
-	// Support Extension: optional coolant measurements, separate from chips/PCB.
+	Position               uint8      `json:"position"`
+	Hashrate               *HashRate  `json:"hashrate"`
+	ExpectedHashrate       *HashRate  `json:"expected_hashrate"`
+	BoardTemperature       *float64   `json:"board_temperature"`
+	InletChipTemperature   *float64   `json:"inlet_chip_temperature"`
+	OutletChipTemperature  *float64   `json:"outlet_chip_temperature"`
 	InletFluidTemperature  *float64   `json:"inlet_fluid_temperature"`
 	OutletFluidTemperature *float64   `json:"outlet_fluid_temperature"`
 	ExpectedChips          *uint16    `json:"expected_chips"`

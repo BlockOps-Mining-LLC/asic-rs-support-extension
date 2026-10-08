@@ -1356,7 +1356,6 @@ mod tests {
                 Some(116),
             ])
         );
-        // Support Extension: unreported slots leave the full capacity unknown.
         assert_eq!(discovered.total_chips(), None);
         assert_eq!(discovered.fans, Some(4));
 

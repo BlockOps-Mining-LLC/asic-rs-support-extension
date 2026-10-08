@@ -1,4 +1,3 @@
-// Support Extension additions: conservative stock Bitmain telemetry parsing.
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{collections::BTreeSet, str::FromStr, time::Duration};
@@ -79,6 +78,7 @@ pub(super) fn extract_stats<'a>(value: &'a Value, _key: Option<&str>) -> Option<
                     || key == "total_rateideal"
                     || key == "rate_ideal"
                     || key == "chain_power"
+                    || key == "total_power"
                     || key == "power"
                     || key == "watt"
                     || key == "Power"
@@ -109,6 +109,19 @@ pub(super) fn stats_locations() -> Vec<DataLocation> {
             )
         })
         .collect::<Vec<_>>();
+    // Keep the legacy product/firmware header for model-specific unit contracts.
+    // It is collected from the same cached read-only stats response.
+    locations.push((
+        MinerCommand::RPC {
+            command: "stats",
+            parameters: None,
+        },
+        DataExtractor {
+            func: get_by_pointer,
+            key: Some("/STATS/0"),
+            tag: Some("legacy_header"),
+        },
+    ));
     // The modern stock dashboard exposes this same aggregate over HTTP, even
     // when its cgminer RPC listener is unavailable (as used by native pyasic).
     locations.push((
@@ -154,7 +167,20 @@ fn rows(value: &Value) -> impl Iterator<Item = &Value> {
 
 fn rate_unit(value: Option<&Value>, algo: HashAlgorithm) -> Option<HashRateUnit> {
     match value {
-        Some(value) => HashRateUnit::from_str(value.as_str()?).ok(),
+        Some(value) => {
+            let raw = value.as_str()?.trim().to_ascii_uppercase();
+            let solution_unit = match raw.as_str() {
+                "S/S" | "SOL/S" | "SOLS/S" => Some(HashRateUnit::Hash),
+                "KS/S" | "KSOL/S" | "KSOLS/S" => Some(HashRateUnit::KiloHash),
+                "MS/S" | "MSOL/S" | "MSOLS/S" => Some(HashRateUnit::MegaHash),
+                "GS/S" | "GSOL/S" | "GSOLS/S" => Some(HashRateUnit::GigaHash),
+                _ => None,
+            };
+            if solution_unit.is_some() {
+                return (algo == HashAlgorithm::Equihash).then_some(solution_unit?);
+            }
+            HashRateUnit::from_str(&raw).ok()
+        }
         None if matches!(algo, HashAlgorithm::SHA256 | HashAlgorithm::KHeavyHash) => {
             Some(HashRateUnit::GigaHash)
         }
@@ -162,6 +188,29 @@ fn rate_unit(value: Option<&Value>, algo: HashAlgorithm) -> Option<HashRateUnit>
         // one explicitly for other algorithms.
         None => None,
     }
+}
+
+fn text_rate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
+    let (raw, unit) = value.as_str()?.trim().split_once(' ')?;
+    make_rate(
+        &Value::String(raw.to_owned()),
+        rate_unit(Some(&json!(unit.trim())), algo)?,
+        algo,
+    )
+}
+
+fn legacy_z15_contract(value: &Value, model: Option<&str>) -> bool {
+    let Some(header) = value.get("legacy_header") else {
+        return false;
+    };
+    model.is_some_and(|model| compact_model(model) == "Z15")
+        && header
+            .get("Type")
+            .and_then(Value::as_str)
+            .is_some_and(|model| compact_model(model) == "Z15")
+        && header.get("CGMiner").and_then(Value::as_str) == Some("4.9.0")
+        && header.get("Miner").and_then(Value::as_str) == Some("9.0.0.5")
+        && header.get("CompileTime").and_then(Value::as_str) == Some("Fri Jul  3 11:39:06 CST 2020")
 }
 
 fn make_rate(value: &Value, unit: HashRateUnit, algo: HashAlgorithm) -> Option<HashRate> {
@@ -179,6 +228,7 @@ fn rate_window(
     window: &str,
     modern_key: &str,
     algo: HashAlgorithm,
+    z15_contract: bool,
 ) -> Option<HashRate> {
     let mut values = Vec::new();
     if let Some(value) = row.get(modern_key) {
@@ -190,13 +240,32 @@ fn rate_window(
             algo,
         )?);
     }
+    let explicit_key = if window == "5s" {
+        "RT HASHRATE"
+    } else {
+        "AV HASHRATE"
+    };
+    if let Some(raw) = row.get(explicit_key) {
+        values.push(text_rate(raw, algo)?);
+    }
     for (key, value) in row.as_object()? {
         let Some((unit, suffix)) = key.split_once(' ') else {
             continue;
         };
         if suffix == window
-            && let Ok(unit) = HashRateUnit::from_str(unit)
+            && let Some(mut unit) = rate_unit(Some(&json!(unit)), algo)
         {
+            if algo == HashAlgorithm::Equihash {
+                // This exact legacy Z15 dashboard labels KSol/s and divides
+                // GHS 5s/av by 1000. The field name is not its physical unit.
+                if z15_contract && key.starts_with("GHS ") {
+                    unit = HashRateUnit::Hash;
+                } else if key.starts_with("GHS ") {
+                    // Other legacy Equihash firmware can also mislabel GHS.
+                    // Prefer its explicit RT/AV HASHRATE, never a magnitude guess.
+                    continue;
+                }
+            }
             values.push(make_rate(value, unit, algo)?);
         }
     }
@@ -207,7 +276,16 @@ fn rate_window(
         .then_some(first)
 }
 
+#[cfg(test)]
 pub(super) fn current_rate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
+    current_rate_for_model(value, algo, None)
+}
+
+pub(super) fn current_rate_for_model(
+    value: &Value,
+    algo: HashAlgorithm,
+    model: Option<&str>,
+) -> Option<HashRate> {
     for row in [
         value.get("modern"),
         value.get("web"),
@@ -220,16 +298,45 @@ pub(super) fn current_rate(value: &Value, algo: HashAlgorithm) -> Option<HashRat
     {
         if row.as_object().is_some_and(|row| {
             row.keys()
-                .any(|key| key == "rate_5s" || key.ends_with(" 5s"))
+                .any(|key| key == "rate_5s" || key.ends_with(" 5s") || key == "RT HASHRATE")
         }) {
-            return rate_window(row, "5s", "rate_5s", algo);
+            if algo == HashAlgorithm::Equihash
+                && row.get("rate_5s").is_none()
+                && row.get("RT HASHRATE").is_none()
+                && !legacy_z15_contract(value, model)
+                && !row.as_object()?.keys().any(|key| {
+                    key.split_once(' ').is_some_and(|(unit, suffix)| {
+                        suffix == "5s"
+                            && unit != "GHS"
+                            && rate_unit(Some(&json!(unit)), algo).is_some()
+                    })
+                })
+            {
+                continue;
+            }
+            return rate_window(
+                row,
+                "5s",
+                "rate_5s",
+                algo,
+                legacy_z15_contract(value, model),
+            );
         }
     }
     None
 }
 
+#[cfg(test)]
 pub(super) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
-    if let Some(rate) = current_rate(value, algo) {
+    hashrate_for_model(value, algo, None)
+}
+
+pub(super) fn hashrate_for_model(
+    value: &Value,
+    algo: HashAlgorithm,
+    model: Option<&str>,
+) -> Option<HashRate> {
+    if let Some(rate) = current_rate_for_model(value, algo, model) {
         return Some(rate);
     }
     // If a current field was present but invalid/conflicting, no average can
@@ -246,7 +353,7 @@ pub(super) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     {
         if row.as_object().is_some_and(|row| {
             row.keys()
-                .any(|key| key == "rate_5s" || key.ends_with(" 5s"))
+                .any(|key| key == "rate_5s" || key.ends_with(" 5s") || key == "RT HASHRATE")
         }) {
             return None;
         }
@@ -261,7 +368,13 @@ pub(super) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     .into_iter()
     .flatten()
     {
-        if let Some(rate) = rate_window(row, "av", "rate_avg", algo) {
+        if let Some(rate) = rate_window(
+            row,
+            "av",
+            "rate_avg",
+            algo,
+            legacy_z15_contract(value, model),
+        ) {
             return Some(rate);
         }
     }
@@ -280,7 +393,7 @@ pub(super) fn expected_hashrate(value: &Value, algo: HashAlgorithm) -> Option<Ha
     let unit = row.get("rate_unit").or_else(|| row.get("unit"));
     // Legacy total_rateideal uses GH/s when it omits rate_unit (captured L9/L11).
     let unit = match unit {
-        Some(value) => HashRateUnit::from_str(value.as_str()?).ok()?,
+        Some(value) => rate_unit(Some(value), algo)?,
         None if matches!(algo, HashAlgorithm::SHA256 | HashAlgorithm::KHeavyHash)
             || key == "total_rateideal" && algo == HashAlgorithm::Scrypt =>
         {
@@ -547,9 +660,25 @@ pub(super) fn hashboards(
             if slot == 0 || slot > u8::MAX as u16 + 1 {
                 continue;
             }
-            let rate = row
-                .get(&format!("chain_rate{slot}"))
-                .and_then(|value| make_rate(value, HashRateUnit::GigaHash, algo));
+            let rate = row.get(&format!("chain_rate{slot}")).and_then(|raw| {
+                if let Some(explicit) = row.get(&format!("CHAIN AVG HASHRATE{slot}")) {
+                    text_rate(explicit, algo)
+                } else if algo == HashAlgorithm::Equihash {
+                    if legacy_z15_contract(value, Some(model)) {
+                        // The legacy Z15 dashboard displays chain_rateN
+                        // directly under its KSol/s board-rate header.
+                        make_rate(raw, HashRateUnit::KiloHash, algo)
+                    } else {
+                        None
+                    }
+                } else {
+                    let unit = match row.get("rate_unit") {
+                        Some(unit) => rate_unit(Some(unit), algo)?,
+                        None => HashRateUnit::GigaHash,
+                    };
+                    make_rate(raw, unit, algo)
+                }
+            });
             let chips = row
                 .get(&format!("chain_acn{slot}"))
                 .and_then(number)
@@ -582,7 +711,12 @@ pub(super) fn hashboards(
                     .collect();
             }
             if pcb.is_empty() {
-                pcb = temperatures(row.get(&format!("temp2_{slot}")));
+                let key = if legacy_z15_contract(value, Some(model)) {
+                    format!("temp{slot}")
+                } else {
+                    format!("temp2_{slot}")
+                };
+                pcb = temperatures(row.get(&key));
             }
             board.board_temperature = maximum(&pcb);
             let mut chip = temperatures(row.get(&format!("temp_chip{slot}")));
@@ -593,12 +727,18 @@ pub(super) fn hashboards(
                     .collect();
             }
             if chip.is_empty() {
-                chip = temperatures(row.get(&format!("temp{slot}")));
+                let key = if legacy_z15_contract(value, Some(model)) {
+                    format!("temp2_{slot}")
+                } else {
+                    format!("temp{slot}")
+                };
+                chip = temperatures(row.get(&key));
             }
             board.inlet_chip_temperature = minimum(&chip);
             board.outlet_chip_temperature = maximum(&chip);
             board.frequency = row
                 .get(&format!("freq{slot}"))
+                .or_else(|| row.get(&format!("frequency{slot}")))
                 .and_then(number)
                 .filter(|value| *value > 0.0)
                 .map(Frequency::from_megahertz);
@@ -609,7 +749,13 @@ pub(super) fn hashboards(
     boards
 }
 
+#[cfg(test)]
 pub(super) fn fans(value: &Value) -> Vec<FanData> {
+    fans_for_model(value, None)
+}
+
+pub(super) fn fans_for_model(value: &Value, model: Option<&str>) -> Vec<FanData> {
+    let z15_contract = legacy_z15_contract(value, model);
     let row = rows(value)
         .find(|row| {
             row.get("fan").is_some()
@@ -649,6 +795,12 @@ pub(super) fn fans(value: &Value) -> Vec<FanData> {
     raw.into_iter()
         .filter_map(|(index, value)| {
             let rpm = number(value).filter(|value| *value >= 0.0)?;
+            // This captured Z15 dashboard displays only nonzero legacy fan
+            // channels. fan_num=2 is paired with fan3/4; fan1/2 are padding,
+            // so their zeros cannot establish physical stopped fan identities.
+            if z15_contract && rpm == 0.0 {
+                return None;
+            }
             // Captured hydro RPC replies pad fan1..fan4 with zeros while
             // fan_num is zero. Keep stopped fans inside the reported count,
             // and never discard a contradictory positive RPM observation.
@@ -709,7 +861,7 @@ fn reported_power(value: &Value) -> Option<(Power, String)> {
     .into_iter()
     .filter_map(|(row, route)| Some((row?, route)))
     .find(|(row, _)| {
-        ["chain_power", "power", "Power", "watt"]
+        ["chain_power", "total_power", "power", "Power", "watt"]
             .into_iter()
             .any(|key| row.get(key).is_some())
     })?;
@@ -724,7 +876,7 @@ fn reported_power(value: &Value) -> Option<(Power, String)> {
     {
         candidates.push((watts, "chain_power"));
     }
-    for key in ["power", "Power", "watt"] {
+    for key in ["total_power", "power", "Power", "watt"] {
         if let Some(value) = row.get(key).and_then(number).filter(|value| *value >= 0.0) {
             candidates.push((value, key));
         }

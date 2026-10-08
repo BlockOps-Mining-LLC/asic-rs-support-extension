@@ -1,9 +1,9 @@
-//! Model names and algorithms documented by pyasic 0.79's Goldshell model classes.
+//! Supported Goldshell model identities.
 //! Firmware version or vendor identity alone never establishes an algorithm.
 use std::str::FromStr;
 
 use asic_rs_core::{
-    data::device::{HashAlgorithm, MinerHardware},
+    data::device::HashAlgorithm,
     errors::ModelSelectionError,
     traits::model::{MinerModel, MinerModelAlgorithm},
 };
@@ -21,6 +21,7 @@ pub enum GoldshellModel {
     KDBoxPro,
     MiniDoge,
     Byte,
+    SC5Pro,
     #[strum(to_string = "{0}")]
     Unknown(String),
 }
@@ -44,6 +45,7 @@ impl FromStr for GoldshellModel {
             "KDBOXPRO" => Self::KDBoxPro,
             "MINIDOGE" => Self::MiniDoge,
             "BYTE" => Self::Byte,
+            "SC5PRO" => Self::SC5Pro,
             _ => Self::Unknown(raw.to_string()),
         })
     }
@@ -56,8 +58,8 @@ impl MinerModelAlgorithm for GoldshellModel {
             Self::HS5 => HashAlgorithm::Handshake,
             Self::KD5 | Self::KDMax | Self::KDBoxII | Self::KDBoxPro => HashAlgorithm::Kadena,
             Self::MiniDoge => HashAlgorithm::Scrypt,
-            // Byte is a multi-device family; pyasic uses GenericAlgo rather
-            // than one algorithm for the whole chassis.
+            Self::SC5Pro => HashAlgorithm::Blake2b,
+            // Byte is a multi-device family rather than one algorithm.
             Self::Byte | Self::Unknown(_) => HashAlgorithm::Unknown,
         }
     }
@@ -72,38 +74,44 @@ impl MinerModel for GoldshellModel {
     }
 }
 
-impl From<GoldshellModel> for MinerHardware {
-    fn from(_: GoldshellModel) -> Self {
-        // Hardware counts require model-specific authoritative evidence; live
-        // working counts are collected separately from the read API.
-        Self::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn exact_model_names_establish_algorithms_but_generic_vendor_does_not() {
-        assert_eq!(
-            GoldshellModel::from_str("Goldshell-CK5")
-                .unwrap()
-                .hash_algorithm(),
-            HashAlgorithm::Eaglesong
-        );
-        assert_eq!(
-            GoldshellModel::from_str("Goldshell")
-                .unwrap()
-                .hash_algorithm(),
-            HashAlgorithm::Unknown
-        );
-        assert_eq!(
-            GoldshellModel::from_str("new-model").unwrap(),
-            GoldshellModel::Unknown("new-model".into())
-        );
-        assert_eq!(
-            MinerHardware::from(GoldshellModel::CK5),
-            MinerHardware::default()
-        );
+    fn retained_model_identities_keep_algorithms_without_expected_hardware() {
+        for (name, expected, algorithm) in [
+            (
+                "Goldshell-CK5",
+                GoldshellModel::CK5,
+                HashAlgorithm::Eaglesong,
+            ),
+            ("HS5", GoldshellModel::HS5, HashAlgorithm::Handshake),
+            ("KD5", GoldshellModel::KD5, HashAlgorithm::Kadena),
+            ("KD-Max", GoldshellModel::KDMax, HashAlgorithm::Kadena),
+            ("KD Box II", GoldshellModel::KDBoxII, HashAlgorithm::Kadena),
+            ("KDBoxPro", GoldshellModel::KDBoxPro, HashAlgorithm::Kadena),
+            ("Mini-Doge", GoldshellModel::MiniDoge, HashAlgorithm::Scrypt),
+            ("Byte", GoldshellModel::Byte, HashAlgorithm::Unknown),
+            ("SC5Pro", GoldshellModel::SC5Pro, HashAlgorithm::Blake2b),
+        ] {
+            let model = GoldshellModel::from_str(name).unwrap();
+            assert_eq!(model, expected);
+            assert_eq!(model.hash_algorithm(), algorithm);
+            assert_eq!(
+                asic_rs_core::data::device::MinerHardware::from(model),
+                asic_rs_core::data::device::MinerHardware::default()
+            );
+        }
+    }
+
+    #[test]
+    fn unverified_sc5_variants_and_ari31_keep_unknown_algorithms() {
+        for name in ["SC5", "SC5ProX", "Goldshell-ARI31", "Goldshell"] {
+            assert_eq!(
+                GoldshellModel::from_str(name).unwrap().hash_algorithm(),
+                HashAlgorithm::Unknown
+            );
+        }
     }
 }

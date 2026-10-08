@@ -1,5 +1,3 @@
-// Modified for Support Extension (2026-10-07): exact hydro model
-// identities and conservative normalization of manufacturer model strings.
 use std::str::FromStr;
 
 use asic_rs_core::data::device::HashAlgorithm;
@@ -107,12 +105,13 @@ pub enum AntMinerModel {
     #[serde(alias = "ANTMINER T17E")]
     #[algorithm(HashAlgorithm::SHA256)]
     T17e,
-    #[serde(alias = "ANTMINER S19")]
+    #[serde(alias = "ANTMINER S19", alias = "ANTMINER S19 HIVEON")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19,
     #[serde(alias = "ANTMINER S19NOPIC")]
     #[serde(alias = "ANTMINER S19 NO PIC")]
     #[serde(alias = "ANTMINER S19X88")]
+    #[serde(alias = "ANTMINER S19X88 HIVEON")]
     #[serde(alias = "S19-88")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19NoPIC,
@@ -137,7 +136,7 @@ pub enum AntMinerModel {
     #[serde(alias = "ANTMINER S19PRO+")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19ProPlus,
-    #[serde(alias = "ANTMINER S19J PRO")]
+    #[serde(alias = "ANTMINER S19J PRO", alias = "ANTMINER S19JPRO HIVEON")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19jPro,
     #[serde(alias = "ANTMINER S19J PRO+")]
@@ -458,6 +457,7 @@ mod tests {
             ("Antminer S19 No PIC", AntMinerModel::S19NoPIC),
             ("Antminer S19x88", AntMinerModel::S19NoPIC),
             ("Antminer S19x88 Hiveon", AntMinerModel::S19NoPIC),
+            ("Antminer S19 Hiveon", AntMinerModel::S19),
             ("ANTMINER S19JPRO HIVEON", AntMinerModel::S19jPro),
             ("S19-88", AntMinerModel::S19NoPIC),
             ("Antminer S19j88NoPIC", AntMinerModel::S19jNoPIC),
@@ -470,11 +470,13 @@ mod tests {
             assert_eq!(AntMinerModel::from_str(alias).unwrap(), expected, "{alias}");
         }
         assert_ne!(AntMinerModel::S19NoPIC, AntMinerModel::S19jNoPIC);
-        for model in [AntMinerModel::AL1, AntMinerModel::S21ProPlus] {
-            let hardware = asic_rs_core::data::device::MinerHardware::from(model);
-            assert!(hardware.boards.is_none());
-            assert!(hardware.fans.is_none());
-        }
+        let al1 = asic_rs_core::data::device::MinerHardware::from(AntMinerModel::AL1);
+        assert!(al1.boards.is_none());
+        assert!(al1.fans.is_none());
+        let s21_pro_plus =
+            asic_rs_core::data::device::MinerHardware::from(AntMinerModel::S21ProPlus);
+        assert_eq!(s21_pro_plus.boards, Some(vec![Some(65); 3]));
+        assert_eq!(s21_pro_plus.fans, Some(4));
         let ks7 = asic_rs_core::data::device::MinerHardware::from(AntMinerModel::KS7);
         assert_eq!(ks7.boards, Some(vec![None; 3]));
         assert!(ks7.fans.is_none());

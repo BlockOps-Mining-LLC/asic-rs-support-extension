@@ -173,11 +173,13 @@ def iter_impl_blocks(text: str) -> tuple[tuple[str, str, str], ...]:
     return tuple(blocks)
 
 
-def collect_backend_supports() -> dict[str, dict[str, str]]:
+def collect_backend_supports(
+    paths: tuple[Path, ...] | None = None,
+) -> dict[str, dict[str, str]]:
     supports: dict[str, dict[str, str]] = {}
     firmwares_dir = REPO_ROOT / "asic-rs-firmwares"
 
-    for path in firmwares_dir.rglob("*.rs"):
+    for path in paths if paths is not None else firmwares_dir.rglob("*.rs"):
         text = read_text(path)
         for trait, target, block in iter_impl_blocks(text):
             if trait not in SUPPORT_TRAITS:
@@ -294,13 +296,42 @@ def collect_support_rows() -> tuple[SupportRow, ...]:
 
     for crate in sorted((REPO_ROOT / "asic-rs-firmwares").iterdir()):
         firmware_rs = crate / "src" / "firmware.rs"
+        standalone_backends: set[str] = set()
+        for path in sorted((crate / "src").glob("*.rs")):
+            if path == firmware_rs:
+                continue
+            blocks = iter_impl_blocks(read_text(path))
+            entries = {name for trait, name, _ in blocks if trait == "FirmwareEntry"}
+            if len(entries) != 1:
+                continue
+            entry = entries.pop()
+            backends = [
+                name for trait, name, block in blocks
+                if trait == "Validate" and re.search(
+                    rf"\btype\s+Firmware\s*=\s*{re.escape(entry)}\s*;", block
+                )
+            ]
+            backend_supports = collect_backend_supports((path,))
+            firmware = parse_display_string(path, entry) or entry
+            make = make_display_names(parse_make_crate_names(path))
+            for backend in backends:
+                standalone_backends.add(backend)
+                values = {
+                    trait: backend_supports.get(backend, {}).get(trait, "No")
+                    for trait, _, _ in SUPPORT_COLUMNS
+                }
+                rows.append(
+                    SupportRow(make=make, firmware=firmware, backend=backend, support=values)
+                )
+
         if not firmware_rs.exists():
             continue
-
         make = make_display_names(parse_make_crate_names(firmware_rs))
         firmware = parse_display_string(firmware_rs) or crate.name
 
         for backend in concrete_backend_structs(crate, supports):
+            if backend in standalone_backends:
+                continue
             backend_make, backend_firmware = backend_identity(crate, backend, make, firmware)
             values = {
                 trait: supports.get(backend, {}).get(trait, "No")

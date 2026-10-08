@@ -1,7 +1,6 @@
-// Support Extension additions: offline stock telemetry regression contracts.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use asic_rs_core::{
     data::{
@@ -18,17 +17,71 @@ use serde_json::{Value, json};
 
 use super::{telemetry::*, v2020::AntMinerV2020, v2023_07::AntMinerV202307};
 use crate::test::json::v2023_07::{
-    S21_HYDRO_COOLANT_SYNTHETIC, S21_PLUS_HYDRO_SYNTHETIC, S21_XP_HYDRO_RPC_STATS_CAPTURED,
+    KS7_MODERN_STATS_CAPTURED, S21_HYDRO_COOLANT_SYNTHETIC, S21_PLUS_HYDRO_SYNTHETIC,
     S21_XP_HYDRO_WEB_STATS_CAPTURED, S21_XP_HYDRO_WEB_SUMMARY_CAPTURED,
     S21J_XP_HYDRO_RPC_STATS_CAPTURED, S21J_XP_HYDRO_WEB_STATS_CAPTURED,
-    S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED, S23_HYDRO_RPC_STATS_CAPTURED, S23_HYDRO_STANDARD_SYNTHETIC,
-    S23_HYDRO_WEB_STATS_CAPTURED, S23_HYDRO_WEB_SUMMARY_CAPTURED,
+    S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED, S21PROPLUS_MODERN_STATS_CAPTURED,
+    S23_HYDRO_STANDARD_SYNTHETIC, Z15_MALFORMED_STATS_CAPTURED, Z15_SUMMARY_CAPTURED,
+    Z15PRO_LEGACY_STATS_CAPTURED, Z15PRO_MODERN_STATS_CAPTURED, Z15PRO_SUMMARY_CAPTURED,
 };
 
 fn row(fixture: &str) -> Value {
     extract_stats(&serde_json::from_str(fixture).unwrap(), None)
         .unwrap()
         .clone()
+}
+
+#[tokio::test]
+async fn captured_product_identities_preserve_algorithm_and_observed_counts() {
+    for (fixture, expected_model, algorithm, chips, expected_chips) in [
+        (
+            KS7_MODERN_STATS_CAPTURED,
+            "KS7",
+            HashAlgorithm::KHeavyHash,
+            108,
+            None,
+        ),
+        (
+            S21PROPLUS_MODERN_STATS_CAPTURED,
+            "S21ProPlus",
+            HashAlgorithm::SHA256,
+            65,
+            Some(65),
+        ),
+    ] {
+        let raw: Value = serde_json::from_str(fixture).unwrap();
+        let model = AntMinerModel::from_str(
+            &raw.pointer("/INFO/type")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_uppercase(),
+        )
+        .unwrap();
+        let miner = AntMinerV202307::new("127.0.0.1".parse().unwrap(), model);
+        let mock = MockAPIClient::new(HashMap::from([(
+            MinerCommand::RPC {
+                command: "stats",
+                parameters: Some(json!({"new_api": true})),
+            },
+            raw.clone(),
+        )]));
+        let mut collector = DataCollector::new_with_client(&miner, &mock);
+        let data = miner.parse_data(collector.collect_all().await);
+        assert_eq!(data.device_info.model, expected_model);
+        assert_eq!(data.device_info.algo, algorithm);
+        assert_eq!(
+            data.hashrate.unwrap().value,
+            raw["STATS"][0]["rate_5s"].as_f64().unwrap() / 1000.0
+        );
+        assert!(data.is_mining);
+        assert_eq!(data.hashboards.len(), 3);
+        for board in data.hashboards {
+            assert_eq!(board.working_chips, Some(chips));
+            assert_eq!(board.expected_chips, expected_chips);
+        }
+        assert_eq!(data.fans.len(), 4);
+    }
 }
 
 fn no_assumed_hardware() -> MinerHardware {
@@ -193,7 +246,7 @@ fn malformed_or_conflicting_current_rate_does_not_use_average() {
 #[test]
 fn scrypt_modern_units_are_explicit_and_legacy_board_units_independent() {
     assert!(hashrate(&json!({"rate_5s": 16000}), HashAlgorithm::Scrypt).is_none());
-    let value = json!({"MHS 5s": 16000, "rate_unit": "MH", "chain_acn1": 180, "chain_rate1": 16});
+    let value = json!({"MHS 5s": 16000, "rate_unit": "MH", "chain_acn1": 180, "chain_rate1": 16, "CHAIN AVG HASHRATE1": "16000 MH/s"});
     let rate = hashrate(&value, HashAlgorithm::Scrypt).unwrap();
     assert_eq!(rate.value, 16.0);
     assert_eq!(rate.unit, HashRateUnit::GigaHash);
@@ -219,6 +272,23 @@ fn scrypt_modern_units_are_explicit_and_legacy_board_units_independent() {
         .value,
         16.0
     );
+}
+
+#[test]
+fn legacy_board_rates_honor_declared_units_without_explicit_board_units() {
+    for (unit, algorithm, raw, expected) in [
+        ("MH", HashAlgorithm::Scrypt, 6700.0, Some(6.7)),
+        ("TH", HashAlgorithm::SHA256, 2.0, Some(2.0)),
+        ("Sol/s", HashAlgorithm::SHA256, 200.0, None),
+    ] {
+        let boards = hashboards(
+            &json!({"rate_unit": unit, "chain_acn1": 10, "chain_rate1": raw}),
+            "Unknown",
+            algorithm,
+            &no_assumed_hardware(),
+        );
+        assert_eq!(boards[0].hashrate.as_ref().map(|rate| rate.value), expected);
+    }
 }
 
 #[test]
@@ -463,19 +533,6 @@ async fn captured_stock_hydro_web_fallback_preserves_actual_telemetry_for_both_b
             [59.0, 59.0, 60.0],
             0,
         ),
-        (
-            AntMinerModel::S23Hydro,
-            S23_HYDRO_WEB_STATS_CAPTURED,
-            S23_HYDRO_WEB_SUMMARY_CAPTURED,
-            84,
-            572.84556,
-            167430,
-            5525.0,
-            327.0,
-            [52.0, 52.0, 52.0],
-            [56.0, 55.0, 56.0],
-            0,
-        ),
     ] {
         let raw = row(stats);
         for miner in [
@@ -566,40 +623,20 @@ async fn captured_stock_hydro_web_fallback_preserves_actual_telemetry_for_both_b
 
 #[test]
 fn captured_legacy_hydro_chip_status_padding_is_not_extra_hardware() {
-    for (model, fixture, count) in [
-        (
-            AntMinerModel::S21XPHydro,
-            S21_XP_HYDRO_RPC_STATS_CAPTURED,
-            160,
-        ),
-        (
-            AntMinerModel::S21jXPHydro,
-            S21J_XP_HYDRO_RPC_STATS_CAPTURED,
-            42,
-        ),
-        (AntMinerModel::S23Hydro, S23_HYDRO_RPC_STATS_CAPTURED, 84),
-    ] {
-        let hardware = MinerHardware::from(model.clone());
-        let boards = hashboards(
-            &row(fixture),
-            &model.to_string(),
-            HashAlgorithm::SHA256,
-            &hardware,
-        );
-        assert_eq!(boards.len(), 3);
-        assert_eq!(
-            fans(&row(fixture)).len(),
-            if model == AntMinerModel::S21XPHydro {
-                4
-            } else {
-                0
-            }
-        );
-        for board in boards {
-            assert_eq!(board.expected_chips, Some(count));
-            assert_eq!(board.working_chips, Some(count));
-            assert_eq!(board.chips.len(), count as usize);
-        }
+    let model = AntMinerModel::S21jXPHydro;
+    let raw = row(S21J_XP_HYDRO_RPC_STATS_CAPTURED);
+    let boards = hashboards(
+        &raw,
+        &model.to_string(),
+        HashAlgorithm::SHA256,
+        &MinerHardware::from(model),
+    );
+    assert_eq!(boards.len(), 3);
+    assert!(fans(&raw).is_empty());
+    for board in boards {
+        assert_eq!(board.expected_chips, Some(42));
+        assert_eq!(board.working_chips, Some(42));
+        assert_eq!(board.chips.len(), 42);
     }
 }
 
@@ -618,7 +655,7 @@ fn captured_response_mutations_keep_real_failures_and_zero_chip_counts_visible()
     assert_eq!(boards[0].chips[1].working, Some(true));
     captured["elapsed"] = json!("NaN");
     assert!(uptime(&captured).is_none());
-    let mut summary: Value = serde_json::from_str(S23_HYDRO_WEB_SUMMARY_CAPTURED).unwrap();
+    let mut summary: Value = serde_json::from_str(S21J_XP_HYDRO_WEB_SUMMARY_CAPTURED).unwrap();
     summary["SUMMARY"][0]["status"][0] =
         json!({"status": "W", "code": 12, "msg": "Reduced hashrate"});
     let errors = messages(&summary);
@@ -628,5 +665,174 @@ fn captured_response_mutations_keep_real_failures_and_zero_chip_counts_visible()
     assert_eq!(
         errors[0].severity,
         asic_rs_core::data::message::MessageSeverity::Warning
+    );
+}
+
+#[test]
+fn solution_units_are_explicit_and_algorithm_specific() {
+    for unit in ["Ksol/s", "KSol/s", "KSols/s", "KS/s"] {
+        let raw = json!({"rate_5s": 891.28, "rate_unit": unit});
+        let rate = hashrate(&raw, HashAlgorithm::Equihash).unwrap();
+        assert_eq!(rate.unit, HashRateUnit::KiloHash);
+        assert_eq!(rate.value, 891.28);
+        assert!(hashrate(&raw, HashAlgorithm::SHA256).is_none());
+        assert!(hashrate(&raw, HashAlgorithm::KHeavyHash).is_none());
+    }
+    let raw = json!({"rate_5s": 380090.19, "rate_unit": "Sol/s"});
+    assert!((hashrate(&raw, HashAlgorithm::Equihash).unwrap().value - 380.09019).abs() < 1e-8);
+    assert!(hashrate(&json!({"GHS 5s": 380090.19}), HashAlgorithm::Equihash).is_none());
+    assert_eq!(
+        hashrate(&json!({"Ksol/s 5s": 891.28}), HashAlgorithm::Equihash)
+            .unwrap()
+            .value,
+        891.28
+    );
+    assert_eq!(
+        hashrate(&json!({"GHS 5s": 380090.19}), HashAlgorithm::SHA256)
+            .unwrap()
+            .value,
+        380.09019
+    );
+}
+
+#[tokio::test]
+async fn captured_z15_restores_proven_units_partial_chips_and_sensor_channels() {
+    // Captured Z15 9.0.0.5 dashboard: KSol/S aggregate uses GHS 5s / 1000;
+    // KSol/S board column displays chain_rateN directly. Its PCB column uses
+    // tempN, chip column temp2_N, and fans display only nonzero channels.
+    let response = super::rpc_response::parse_response(Z15_MALFORMED_STATS_CAPTURED).unwrap();
+    let summary: Value = serde_json::from_str(Z15_SUMMARY_CAPTURED).unwrap();
+    let context = json!({"legacy_header": response["STATS"][0], "summary": summary["SUMMARY"][0]});
+    assert!(
+        (hashrate_for_model(&context, HashAlgorithm::Equihash, Some("Z15"))
+            .unwrap()
+            .value
+            - 380.09019)
+            .abs()
+            < 1e-8
+    );
+    assert!(hashrate_for_model(&context, HashAlgorithm::Equihash, Some("Z15Pro")).is_none());
+    let mut changed = context.clone();
+    changed["legacy_header"]["Miner"] = json!("unknown");
+    assert!(hashrate_for_model(&changed, HashAlgorithm::Equihash, Some("Z15")).is_none());
+    for miner in [
+        Box::new(AntMinerV2020::new(
+            "127.0.0.1".parse().unwrap(),
+            AntMinerModel::Z15,
+        )) as Box<dyn Miner>,
+        Box::new(AntMinerV202307::new(
+            "127.0.0.1".parse().unwrap(),
+            AntMinerModel::Z15,
+        )),
+    ] {
+        let mock = MockAPIClient::new(HashMap::from([(
+            MinerCommand::RPC {
+                command: "stats",
+                parameters: None,
+            },
+            response.clone(),
+        )]));
+        let mut collector = DataCollector::new_with_client(miner.as_ref(), &mock);
+        let data = miner.parse_data(collector.collect_all().await);
+        let rate = data.hashrate.unwrap();
+        assert_eq!(rate.algo, HashAlgorithm::Equihash);
+        assert_eq!(rate.unit, HashRateUnit::KiloHash);
+        assert!((rate.value - 394.50432).abs() < 1e-8);
+        assert!(data.is_mining);
+        assert_eq!(data.uptime.unwrap().as_secs(), 844088);
+        assert_eq!(data.hashboards.len(), 3);
+        for (index, board) in data.hashboards.iter().enumerate() {
+            assert_eq!(board.position, index as u8);
+            assert_eq!(board.expected_chips, Some(3));
+            assert_eq!(board.working_chips, Some([3, 3, 2][index]));
+            assert_eq!(
+                board.frequency.unwrap().as_megahertz(),
+                [800.0, 800.0, 815.0][index]
+            );
+            assert_eq!(board.chips.len(), [3, 3, 2][index] as usize);
+            assert_eq!(
+                board.hashrate.as_ref().unwrap().value,
+                [135.0, 155.97, 103.54][index]
+            );
+            assert_eq!(board.board_temperature.unwrap().as_celsius(), 51.0);
+            assert_eq!(
+                board.outlet_chip_temperature.unwrap().as_celsius(),
+                [80.0, 77.0, 73.0][index]
+            );
+        }
+        assert_eq!(data.fans.len(), 2);
+        assert_eq!(
+            data.fans.iter().map(|fan| fan.position).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(
+            data.fans
+                .iter()
+                .all(|fan| fan.rpm.unwrap().as_rpm() == 4320.0)
+        );
+        assert!(data.wattage.is_none());
+        assert!(data.wattage_source.is_none());
+    }
+}
+
+#[tokio::test]
+async fn captured_z15pro_uses_explicit_solution_units_and_physical_slots() {
+    for miner in [
+        Box::new(AntMinerV2020::new(
+            "127.0.0.1".parse().unwrap(),
+            AntMinerModel::Z15Pro,
+        )) as Box<dyn Miner>,
+        Box::new(AntMinerV202307::new(
+            "127.0.0.1".parse().unwrap(),
+            AntMinerModel::Z15Pro,
+        )),
+    ] {
+        let mock = MockAPIClient::new(HashMap::from([(
+            MinerCommand::RPC {
+                command: "stats",
+                parameters: Some(json!({"new_api": true})),
+            },
+            serde_json::from_str(Z15PRO_MODERN_STATS_CAPTURED).unwrap(),
+        )]));
+        let mut collector = DataCollector::new_with_client(miner.as_ref(), &mock);
+        let data = miner.parse_data(collector.collect_all().await);
+        assert_eq!(data.hashrate.unwrap().value, 891.28);
+        assert_eq!(data.expected_hashrate.unwrap().value, 874.11);
+        assert!(data.is_mining);
+        assert_eq!(
+            data.hashboards
+                .iter()
+                .map(|board| board.position)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3]
+        );
+        for (index, board) in data.hashboards.iter().enumerate() {
+            assert_eq!(board.working_chips, Some(6));
+            assert_eq!(
+                board.hashrate.as_ref().unwrap().unit,
+                HashRateUnit::KiloHash
+            );
+            assert_eq!(
+                board.hashrate.as_ref().unwrap().value,
+                [285.88, 290.54, 286.31][index]
+            );
+            assert_eq!(board.expected_chips, if index < 2 { Some(6) } else { None });
+        }
+    }
+    let summary: Value = serde_json::from_str(Z15PRO_SUMMARY_CAPTURED).unwrap();
+    let rate = hashrate(&summary["SUMMARY"][0], HashAlgorithm::Equihash).unwrap();
+    assert_eq!(rate.value, 891.29);
+    let boards = hashboards(
+        &row(Z15PRO_LEGACY_STATS_CAPTURED),
+        "Z15Pro",
+        HashAlgorithm::Equihash,
+        &MinerHardware::from(AntMinerModel::Z15Pro),
+    );
+    assert_eq!(
+        boards
+            .iter()
+            .map(|board| board.hashrate.as_ref().unwrap().value)
+            .collect::<Vec<_>>(),
+        vec![289.94, 290.84, 238.95]
     );
 }

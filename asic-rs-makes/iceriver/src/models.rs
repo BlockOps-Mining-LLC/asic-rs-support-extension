@@ -13,7 +13,7 @@ use ts_rs::TS;
 )]
 pub enum IceRiverModel {
     #[algorithm(HashAlgorithm::Blake3)]
-    #[serde(alias = "10306", alias = "ICERIVER AL3")]
+    #[serde(alias = "ICERIVER AL3", alias = "10306")]
     AL3,
     #[algorithm(HashAlgorithm::KHeavyHash)]
     KS0,
@@ -75,5 +75,20 @@ mod tests {
         let model = IceRiverModel::from_str("future model").unwrap();
         assert!(!model.is_known());
         assert_eq!(model.hash_algorithm(), HashAlgorithm::Unknown);
+    }
+
+    #[test]
+    fn retained_kaspa_identities_keep_algorithms_without_expected_hardware() {
+        for name in [
+            "KS0", "KS1", "KS2", "KS3", "KS3L", "KS3M", "KS5", "KS5L", "KS5M",
+        ] {
+            let model = IceRiverModel::from_str(name).unwrap();
+            assert!(model.is_known());
+            assert_eq!(model.hash_algorithm(), HashAlgorithm::KHeavyHash);
+            assert_eq!(
+                asic_rs_core::data::device::MinerHardware::from(model),
+                asic_rs_core::data::device::MinerHardware::default()
+            );
+        }
     }
 }

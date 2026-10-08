@@ -411,7 +411,6 @@ dependencies = [
  "asic-rs-makes-antminer",
  "async-trait",
  "diqwest",
- "macaddr",
  "measurements",
  "once_cell",
  "pyo3",

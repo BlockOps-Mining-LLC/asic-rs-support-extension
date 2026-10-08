@@ -1,4 +1,4 @@
-// Support Extension modifications: shared stock telemetry parser module.
+mod rpc_response;
 mod telemetry;
 #[cfg(test)]
 mod telemetry_tests;

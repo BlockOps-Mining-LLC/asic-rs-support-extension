@@ -1,14 +1,19 @@
-"""Offline Python schema checks for the support extension."""
+"""Telemetry measurement and schema compatibility checks."""
 from __future__ import annotations
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pyasic_rs.data import BoardData, MinerHardware
+from pyasic_rs.asic_rs import HashAlgorithm
+from pyasic_rs.data import BoardData, HashRate, HashRateUnit, MinerHardware
 
 
 class BoardModel(BaseModel):
     board: BoardData
+
+
+class RateModel(BaseModel):
+    hashrate: HashRate
 
 
 def board_payload(**extra: object) -> dict[str, object]:
@@ -75,3 +80,18 @@ def test_python_chip_totals_preserve_unknown_measurements_and_overflow(
     hardware = MinerHardware.model_validate({"fans": 0, "boards": boards})
     assert hardware.total_chips == expected
     assert hardware.chips == expected
+
+
+def test_blake2b_keeps_its_identity_when_reported_megahashes_become_terahashes() -> None:
+    reported = HashRate(11_000_000, HashRateUnit.MH, HashAlgorithm.Blake2b)
+    normalized = reported.into_default_unit()
+    assert normalized.value == 11
+    assert normalized.unit == HashRateUnit.TH
+    assert normalized.algo == HashAlgorithm.Blake2b
+    assert normalized.algo != HashAlgorithm.Blake2S256
+    assert normalized.algo != HashAlgorithm.Blake3
+    wire = RateModel(hashrate=normalized).model_dump_json()
+    assert '"algo":"Blake2b"' in wire
+    restored = RateModel.model_validate_json(wire).hashrate
+    assert restored.algo == HashAlgorithm.Blake2b
+    assert restored.value == 11

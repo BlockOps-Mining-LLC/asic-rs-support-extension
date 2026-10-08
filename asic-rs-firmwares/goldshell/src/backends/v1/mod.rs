@@ -1,4 +1,6 @@
-use crate::{firmware::GoldshellFirmware, web::GoldshellWebAPI};
+pub mod web;
+
+use crate::firmware::GoldshellFirmware;
 use asic_rs_core::{
     config::collector::{ConfigCollector, ConfigField, ConfigLocation},
     data::{
@@ -23,6 +25,7 @@ use std::{
     str::FromStr,
     time::Duration,
 };
+use web::GoldshellWebAPI;
 
 #[derive(Debug)]
 pub struct GoldshellV1 {
@@ -55,11 +58,31 @@ fn number(value: Option<&Value>) -> Option<f64> {
 fn integer(value: Option<&Value>) -> Option<u64> {
     value.and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
 }
+fn temperature(value: Option<&Value>) -> Option<f64> {
+    number(value).filter(|value| *value > 0.0 && *value <= 200.0)
+}
 fn string(data: &HashMap<DataField, Value>, field: DataField) -> Option<String> {
     data.get(&field)?.as_str().map(str::to_string)
 }
 fn details<'a>(data: &'a Value, _: Option<&str>) -> Option<&'a Value> {
     data.get("DEVS").or_else(|| data.get("DEVDETAILS"))
+}
+fn device_fans<'a>(data: &'a Value, _: Option<&str>) -> Option<&'a Value> {
+    let devices = data.get("DEVS")?;
+    devices
+        .as_array()?
+        .iter()
+        .any(|row| {
+            row.as_object().is_some_and(|row| {
+                row.iter().any(|(key, value)| {
+                    key.strip_prefix("fan")
+                        .and_then(|suffix| suffix.parse::<u16>().ok())
+                        .is_some()
+                        && number(Some(value)).is_some()
+                })
+            })
+        })
+        .then_some(devices)
 }
 fn location(
     command: MinerCommand,
@@ -88,9 +111,10 @@ fn web(command: &'static str) -> MinerCommand {
     }
 }
 fn declared_rate(row: &Value, algo: HashAlgorithm) -> Option<HashRate> {
-    let value = ["MHS 20s", "MHS 5s", "MHS 1m", "MHS av"]
+    let selected = ["MHS 20s", "MHS 5s", "MHS 1m", "MHS av"]
         .into_iter()
-        .find_map(|key| number(row.get(key)))?;
+        .find_map(|key| row.get(key))?;
+    let value = number(Some(selected))?;
     let rate = HashRate {
         value,
         unit: HashRateUnit::MegaHash,
@@ -144,7 +168,19 @@ impl GetDataLocations for GoldshellV1 {
                     },
                 ),
             ],
-            DataField::Fans => vec![location(rpc("stats"), "/STATS", None)],
+            // Live SC5Pro/ARI31 report RPM in DEVS while their STATS reply is
+            // not valid JSON. Keep the older STATS route as a fallback.
+            DataField::Fans => vec![
+                (
+                    rpc("devs"),
+                    DataExtractor {
+                        func: device_fans,
+                        key: None,
+                        tag: None,
+                    },
+                ),
+                location(rpc("stats"), "/STATS", None),
+            ],
             DataField::Pools => vec![location(rpc("pools"), "/POOLS", None)],
             _ => vec![],
         }
@@ -201,7 +237,8 @@ impl GetIsMining for GoldshellV1 {
             .and_then(|r| {
                 ["MHS 20s", "MHS 5s", "MHS 1m"]
                     .into_iter()
-                    .find_map(|key| number(r.get(key)))
+                    .find_map(|key| r.get(key))
+                    .and_then(|value| number(Some(value)))
             })
             .is_some_and(|rate| rate > 0.0)
     }
@@ -230,7 +267,26 @@ impl GetHashboards for GoldshellV1 {
                 .entry(position)
                 .or_insert_with(|| BoardData::new(position, None));
             board.hashrate = declared_rate(row, self.device_info.algo);
-            board.board_temperature = number(row.get("tstemp-2")).map(Temperature::from_celsius);
+            board.board_temperature =
+                temperature(row.get("tstemp-2")).map(Temperature::from_celsius);
+            let chip_temperatures = [
+                temperature(row.get("tstemp-0")),
+                temperature(row.get("tstemp-1")),
+            ];
+            // Retain coolest/hottest reported chip sensor channels; ordering
+            // does not establish a physical inlet/outlet sensor location.
+            board.inlet_chip_temperature = chip_temperatures
+                .iter()
+                .flatten()
+                .copied()
+                .reduce(f64::min)
+                .map(Temperature::from_celsius);
+            board.outlet_chip_temperature = chip_temperatures
+                .iter()
+                .flatten()
+                .copied()
+                .reduce(f64::max)
+                .map(Temperature::from_celsius);
             board.active = board.hashrate.as_ref().map(|r| r.value > 0.0);
         }
         for row in raw
@@ -268,13 +324,18 @@ impl GetFans for GoldshellV1 {
                     continue;
                 };
                 if let Some(rpm) = number(Some(value)) {
-                    fans.insert(
-                        position,
-                        FanData {
+                    // Firmware repeats global fan indices in each DEVS row.
+                    // Preserve the slowest observed value when snapshots differ
+                    // instead of silently choosing the final board's row.
+                    fans.entry(position)
+                        .and_modify(|fan| {
+                            let observed = fan.rpm.map(|value| value.as_rpm()).unwrap_or(rpm);
+                            fan.rpm = Some(AngularVelocity::from_rpm(observed.min(rpm)));
+                        })
+                        .or_insert(FanData {
                             position,
                             rpm: Some(AngularVelocity::from_rpm(rpm)),
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -403,8 +464,19 @@ impl HasDefaultAuth for GoldshellV1 {
         MinerAuth::new("admin", "123456789")
     }
 }
+#[async_trait]
 impl Validate for GoldshellV1 {
     type Firmware = GoldshellFirmware;
+
+    async fn revalidate(&self) -> anyhow::Result<bool> {
+        let Ok(status) = self.web.read("status").await else {
+            return Ok(false);
+        };
+        let Ok(model) = crate::firmware::model_from_status(&status) else {
+            return Ok(false);
+        };
+        Ok(model.to_string() == self.device_info.model)
+    }
 }
 
 #[cfg(test)]
@@ -419,31 +491,41 @@ mod tests {
         )
     }
     #[test]
-    fn declared_rates_remain_observable_without_a_guessed_algorithm() {
-        let raw: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/rpc_contract.json")).unwrap();
-        let rate = miner()
-            .parse_hashrate(&HashMap::from([(
-                DataField::Hashrate,
-                raw["SUMMARY"][0].clone(),
-            )]))
-            .unwrap();
+    fn present_invalid_current_rate_does_not_fall_back_to_older_samples() {
+        let miner = miner();
+        for invalid in [json!("NaN"), json!(-1), json!(null), json!(true)] {
+            let row = json!({"MHS 20s": invalid, "MHS 5s": 25, "MHS av": 999});
+            let data = HashMap::from([
+                (DataField::Hashrate, row.clone()),
+                (DataField::IsMining, row),
+            ]);
+            assert!(miner.parse_hashrate(&data).is_none());
+            assert!(!miner.parse_is_mining(&data));
+        }
+        let row = json!({"MHS 5s": 25, "MHS av": 999});
+        let data = HashMap::from([
+            (DataField::Hashrate, row.clone()),
+            (DataField::IsMining, row),
+        ]);
+        let rate = miner.parse_hashrate(&data).unwrap();
         assert_eq!(rate.value, 25.0);
         assert_eq!(rate.unit, HashRateUnit::MegaHash);
         assert_eq!(rate.algo, HashAlgorithm::Unknown);
-        assert!(!miner().parse_is_mining(&HashMap::from([(
+        assert!(miner.parse_is_mining(&data));
+        assert!(!miner.parse_is_mining(&HashMap::from([(
             DataField::IsMining,
-            json!({"MHS 20s":0,"MHS av":999})
+            json!({"MHS 20s": 0, "MHS av": 999}),
         )])));
-        assert!(!miner().parse_is_mining(&HashMap::new()));
+        assert!(!miner.parse_is_mining(&HashMap::new()));
     }
     #[test]
     fn observed_boards_do_not_require_expected_hardware_or_fabricate_chips() {
-        let raw: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/rpc_contract.json")).unwrap();
         let boards = miner().parse_hashboards(&HashMap::from([(
             DataField::Hashboards,
-            json!({"devices":raw["DEVS"],"details":raw["DEVDETAILS"]}),
+            json!({
+                "devices": [{"ID": 0}, {"ID": 1}],
+                "details": [{"ID": 0, "chips-nr": 16}, {"ID": 1, "chips-nr": 0}],
+            }),
         )]));
         assert_eq!(boards.len(), 2);
         assert_eq!(boards[0].working_chips, Some(16));
@@ -451,6 +533,99 @@ mod tests {
         assert!(boards.iter().all(|b| b.expected_chips.is_none()));
         assert!(miner().get_expected_hashboards().is_none());
         assert!(miner().parse_wattage(&HashMap::new()).is_none());
+    }
+    #[test]
+    fn live_devs_sensor_channels_and_fans_remain_separate_from_pcb_and_unknown_hardware() {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/live_sc5pro_2_2_0.json"
+        ))
+        .unwrap();
+        let model = crate::firmware::model_from_status(&raw["status"]).unwrap();
+        assert_eq!(model, GoldshellModel::SC5Pro);
+        let live_miner = GoldshellV1::new(IpAddr::from([127, 0, 0, 1]), model);
+        let boards = live_miner.parse_hashboards(&HashMap::from([(
+            DataField::Hashboards,
+            json!({"devices": raw["DEVS"], "details": raw["DEVDETAILS"]}),
+        )]));
+        assert_eq!(boards.len(), 4);
+        assert!(
+            boards
+                .iter()
+                .all(|board| board.working_chips == Some(84) && board.expected_chips.is_none())
+        );
+        assert_eq!(boards[0].board_temperature.unwrap().as_celsius(), 78.69);
+        assert_eq!(boards[0].inlet_chip_temperature.unwrap().as_celsius(), 88.0);
+        assert_eq!(
+            boards[0].outlet_chip_temperature.unwrap().as_celsius(),
+            88.0
+        );
+        assert!(boards[0].voltage.is_none());
+        assert!(boards[0].frequency.is_none());
+        let rate = boards[0].hashrate.as_ref().unwrap();
+        assert_eq!(rate.algo, HashAlgorithm::Blake2b);
+        assert_eq!(rate.unit, HashRateUnit::TeraHash);
+        assert!((rate.value - 2.770500143).abs() < 1e-9);
+        assert!(live_miner.get_expected_hashboards().is_none());
+        let fan_rows = device_fans(&raw, None).unwrap();
+        let fans = miner().parse_fans(&HashMap::from([(DataField::Fans, fan_rows.clone())]));
+        assert_eq!(fans.len(), 4);
+        for (fan, expected) in fans.iter().zip([2040.0, 2040.0, 2040.0, 2100.0]) {
+            assert!((fan.rpm.unwrap().as_rpm() - expected).abs() < 1e-6);
+        }
+        let data = HashMap::from([(DataField::Hashrate, json!({"MHS 20s": 10_861_769.547}))]);
+        let rate = live_miner.parse_hashrate(&data).unwrap();
+        assert_eq!(rate.algo, HashAlgorithm::Blake2b);
+        assert_eq!(rate.unit, HashRateUnit::TeraHash);
+        assert!((rate.value - 10.861769547).abs() < 1e-9);
+        assert!(live_miner.parse_wattage(&HashMap::new()).is_none());
+    }
+    #[test]
+    fn live_unknown_ari31_preserves_declared_units_and_observed_boards() {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/live_ari31_2_2_3.json"
+        ))
+        .unwrap();
+        let model = crate::firmware::model_from_status(&raw["status"]).unwrap();
+        let miner = GoldshellV1::new(IpAddr::from([127, 0, 0, 1]), model);
+        let rate = miner
+            .parse_hashrate(&HashMap::from([(
+                DataField::Hashrate,
+                raw["SUMMARY"][0].clone(),
+            )]))
+            .unwrap();
+        assert_eq!(rate.algo, HashAlgorithm::Unknown);
+        assert_eq!(rate.unit, HashRateUnit::MegaHash);
+        assert!(rate.value > 0.0);
+        let boards = miner.parse_hashboards(&HashMap::from([(
+            DataField::Hashboards,
+            json!({"devices": raw["DEVS"], "details": raw["DEVDETAILS"]}),
+        )]));
+        assert_eq!(boards.len(), 4);
+        assert!(boards.iter().all(|board| board.working_chips == Some(128)
+            && board.expected_chips.is_none()
+            && board.hashrate.as_ref().unwrap().algo == HashAlgorithm::Unknown
+            && board.hashrate.as_ref().unwrap().unit == HashRateUnit::MegaHash));
+        assert!(miner.get_expected_hashboards().is_none());
+    }
+    #[test]
+    fn missing_chip_channels_are_not_filled_from_pcb_or_zero_sentinels() {
+        let boards = miner().parse_hashboards(&HashMap::from([(
+            DataField::Hashboards,
+            json!({"devices": [
+                {"ID": 0, "tstemp-2": 60, "tstemp-0": 0, "tstemp-1": -1},
+                {"ID": 1, "tstemp-2": 61, "tstemp-0": 87, "tstemp-1": 90},
+            ]}),
+        )]));
+        assert!(boards[0].inlet_chip_temperature.is_none());
+        assert!(boards[0].outlet_chip_temperature.is_none());
+        assert_eq!(boards[0].board_temperature.unwrap().as_celsius(), 60.0);
+        assert_eq!(boards[1].inlet_chip_temperature.unwrap().as_celsius(), 87.0);
+        assert_eq!(
+            boards[1].outlet_chip_temperature.unwrap().as_celsius(),
+            90.0
+        );
+        assert!(device_fans(&json!({"DEVS": [{"ID":0,"fan0":"invalid"}]}), None).is_none());
+        assert!(device_fans(&json!({"DEVS": [{"ID":0,"fan0":0}]}), None).is_some());
     }
     #[tokio::test]
     async fn writes_are_rejected_before_a_connection_is_attempted() {

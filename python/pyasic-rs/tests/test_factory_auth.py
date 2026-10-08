@@ -8,7 +8,7 @@ from pyasic_rs.factory import MinerFactory
 
 @pytest.mark.parametrize("firmware", [
     "AntMiner Stock", "Hiveon", "KaonSu", "VNish", "Braiins",
-    "IceRiver Stock", "Goldshell Stock (read-only)",
+    "IceRiver Stock", "Goldshell Stock", "Goldshell Stock (read-only)",
     "Innosilicon Stock (read-only)",
 ])
 def test_discovery_auth_accepts_registered_display_names_and_is_chainable(firmware: str) -> None:

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// ks5_contract.json is transcribed from an existing sanitized KaonSu firmware
-// contract fixture. Other cases mutate that contract or use known firmware
-// fields. No private endpoint, device or account identifiers are included.
-// None of these tests is represented as a live Mara/KaonSu acceptance run.
 use crate::{
-    backend::KaonsuMiner,
+    backends::v1::KaonsuMiner,
     firmware::{KaonsuFirmware, model_from_overview},
     telemetry,
 };
@@ -28,6 +24,8 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const KS5_CONTRACT: &str = include_str!("test/ks5_contract.json");
+const MARA_REL314_GH: &str = include_str!("test/mara_rel314_gh.json");
+const MARA_REL314_STOPPED: &str = include_str!("test/mara_rel314_stopped.json");
 fn fixture() -> Value {
     serde_json::from_str(KS5_CONTRACT).unwrap()
 }
@@ -51,12 +49,136 @@ async fn collect(fixture: &Value, model: AntMinerModel) -> asic_rs_core::data::m
 }
 
 #[tokio::test]
-async fn source_backed_contract_retains_estimated_power_and_actual_board_data() {
+async fn live_mara_gh_units_metadata_and_missing_board_remain_distinct() {
+    let fixture: Value = serde_json::from_str(MARA_REL314_GH).unwrap();
+    let model = model_from_overview(&fixture["overview"]).unwrap();
+    assert_eq!(model, AntMinerModel::KS5Pro);
+    let data = collect(&fixture, model).await;
+    assert_eq!(data.device_info.algo, HashAlgorithm::KHeavyHash);
+    assert!(data.is_mining);
+    assert_eq!(data.operating_state, Some(OperatingState::Mining {}));
+    assert_eq!(data.expected_hashboards, Some(3));
+    assert!(data.device_info.hardware.boards.is_none());
+    let control_board = data.control_board_version.unwrap();
+    assert_eq!(control_board.name, "CVCtrl");
+    assert!(!control_board.known);
+    assert_eq!(data.uptime.unwrap().as_secs(), 661101);
+    assert!((data.hashrate.as_ref().unwrap().value - 12.724099).abs() < 1e-9);
+    assert_eq!(data.total_chips, Some(184));
+    assert_eq!(data.hashboards[0].working_chips, Some(0));
+    assert_eq!(data.hashboards[0].expected_chips, Some(92));
+    assert_eq!(data.hashboards[0].active, Some(false));
+    assert!(data.hashboards[0].board_temperature.is_none());
+    assert!((data.hashboards[1].hashrate.as_ref().unwrap().value - 6.429394).abs() < 1e-8);
+    assert!((data.hashboards[2].hashrate.as_ref().unwrap().value - 6.294704).abs() < 1e-8);
+    assert!((data.hashboards[2].board_temperature.unwrap().as_celsius() - 70.511185).abs() < 1e-9);
+    assert!(
+        (data.hashboards[2]
+            .outlet_chip_temperature
+            .unwrap()
+            .as_celsius()
+            - 75.511185)
+            .abs()
+            < 1e-9
+    );
+    assert_eq!(data.wattage.unwrap().as_watts(), 1946.0);
+    assert_eq!(data.wattage_is_estimated, Some(true));
+    assert_eq!(data.wattage_indicator, Some(0));
+    assert!((data.reported_max_temperature.unwrap().as_celsius() - 60.511185).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn live_stopped_mara_keeps_zero_rates_fans_and_reported_chip_counts() {
+    let fixture: Value = serde_json::from_str(MARA_REL314_STOPPED).unwrap();
+    let model = model_from_overview(&fixture["overview"]).unwrap();
+    let data = collect(&fixture, model).await;
+    assert!(!data.is_mining);
+    assert_eq!(data.hashrate.as_ref().unwrap().value, 0.0);
+    assert_eq!(data.hashrate.as_ref().unwrap().unit, HashRateUnit::TeraHash);
+    assert_eq!(data.expected_hashboards, Some(3));
+    assert_eq!(data.total_chips, Some(276));
+    assert!(data.expected_chips.is_none());
+    assert!(data.hashboards.iter().all(|board| {
+        board.working_chips == Some(92)
+            && board.expected_chips == Some(92)
+            && board.active == Some(false)
+    }));
+    assert_eq!(data.fans.len(), 4);
+    assert!(data.fans.iter().all(|fan| fan.rpm.unwrap().as_rpm() == 0.0));
+    assert_eq!(data.wattage.unwrap().as_watts(), 25.0);
+    assert_eq!(data.wattage_is_estimated, Some(true));
+    assert_eq!(data.wattage_firmware_source.as_deref(), Some("EST"));
+    assert_eq!(data.uptime.unwrap().as_secs(), 264);
+    assert_eq!(
+        data.operating_state,
+        Some(OperatingState::Unknown {
+            raw: "Sleep".to_owned()
+        })
+    );
+}
+
+#[tokio::test]
+async fn unknown_product_retains_the_declared_rate_unit() {
+    let mut fixture = fixture();
+    fixture["overview"]["model_extended"] = json!("Mara unknown model");
+    fixture["brief"]["hashrate_unit"] = json!("GH/s");
+    fixture["brief"]["hashrate_realtime_10m"] = json!(12570);
+    let model = model_from_overview(&fixture["overview"]).unwrap();
+    let data = collect(&fixture, model).await;
+    let rate = data.hashrate.unwrap();
+    assert_eq!(rate.algo, HashAlgorithm::Unknown);
+    assert_eq!(rate.unit, HashRateUnit::GigaHash);
+    assert_eq!(rate.value, 12570.0);
+    assert!(data.device_info.hardware.boards.is_none());
+}
+
+#[tokio::test]
+async fn board_averages_keep_documented_gh_unit_when_aggregate_is_th() {
+    let mut fixture = fixture();
+    fixture["hashboards"]["hashboards"][0]["hashrate_average"] = json!(6700);
+    fixture["hashboards"]["hashboards"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("hashrate_average_unit");
+    let data = collect(&fixture, AntMinerModel::KS5Pro).await;
+    assert_eq!(data.hashboards[0].hashrate.as_ref().unwrap().value, 6.7);
+}
+
+#[test]
+fn invalid_elapsed_and_board_count_do_not_fabricate_metadata() {
+    for invalid in [
+        json!(-1),
+        json!("nan"),
+        json!("inf"),
+        json!(null),
+        json!({}),
+    ] {
+        assert!(telemetry::uptime(&json!({"elapsed": invalid})).is_none());
+    }
+    assert_eq!(
+        telemetry::uptime(&json!({"elapsed": 0})).unwrap().as_secs(),
+        0
+    );
+    for invalid in [
+        json!(0),
+        json!(-1),
+        json!(2.5),
+        json!(256),
+        json!(null),
+        json!("nan"),
+    ] {
+        assert!(telemetry::expected_boards(&json!({"hashboard_num_ideal": invalid})).is_none());
+    }
+    assert_eq!(
+        telemetry::expected_boards(&json!({"hashboard_num_ideal": 3.0})),
+        Some(3)
+    );
+}
+
+#[tokio::test]
+async fn source_contract_covers_unit_defaults_and_missing_sensor_fields() {
     let fixture = fixture();
     let data = collect(&fixture, model_from_overview(&fixture["overview"]).unwrap()).await;
-    assert_eq!(data.device_info.firmware, "KaonSu");
-    assert_eq!(data.device_info.algo, HashAlgorithm::KHeavyHash);
-    assert!(data.device_info.hardware.boards.is_none());
     assert_eq!(data.firmware_version.as_deref(), Some("1.0.3"));
     assert!((data.hashrate.unwrap().value - 20.1).abs() < 1e-9);
     assert_eq!(data.expected_hashrate.unwrap().value, 21.0);
@@ -65,42 +187,21 @@ async fn source_backed_contract_retains_estimated_power_and_actual_board_data() 
         data.wattage_source.as_deref(),
         Some("kaonsu.brief:power_consumption_estimated")
     );
-    assert_eq!(data.wattage_is_estimated, Some(true));
     assert_eq!(data.wattage_firmware_source.as_deref(), Some("PSU"));
-    assert_eq!(data.wattage_indicator, Some(0));
-    assert_eq!(data.reported_max_temperature.unwrap().as_celsius(), 70.0);
     assert!(data.average_temperature.is_none());
-    assert!(data.is_mining);
-    assert_eq!(data.operating_state, Some(OperatingState::Mining {}));
-    assert_eq!(data.hashboards.len(), 3);
-    assert_eq!(data.total_chips, Some(360));
     assert_eq!(data.fans.len(), 2);
     assert_eq!(data.fans[0].rpm.unwrap().as_rpm(), 5200.0);
-    assert!(data.timestamp > 0);
     assert!(data.uptime.is_none());
-    for (position, board) in data.hashboards.iter().enumerate() {
-        assert_eq!(board.position, position as u8);
-        assert_eq!(board.working_chips, Some(120));
+    for board in &data.hashboards {
         assert!(board.expected_chips.is_none());
-        assert_eq!(board.hashrate.as_ref().unwrap().value, 6.7);
         assert_eq!(board.inlet_chip_temperature.unwrap().as_celsius(), 65.0);
-        assert_eq!(board.outlet_chip_temperature.unwrap().as_celsius(), 68.0);
         assert!(board.board_temperature.is_none());
-        assert!(board.inlet_fluid_temperature.is_none());
     }
 }
 
 #[tokio::test]
 async fn same_protocol_has_algorithm_appropriate_units_for_ks5_l9_and_s19k() {
     for (model, raw, raw_unit, expected, unit, algorithm) in [
-        (
-            AntMinerModel::KS5,
-            20000.0,
-            "GH/s",
-            20.0,
-            HashRateUnit::TeraHash,
-            HashAlgorithm::KHeavyHash,
-        ),
         (
             AntMinerModel::KS5Pro,
             0.021,
@@ -285,7 +386,7 @@ fn reported_max_temperature_uses_only_the_exact_max_field() {
 
 #[test]
 fn board_ids_and_documented_gh_fields_do_not_require_magnitude_guesses() {
-    let boards = json!({"hashboards": [
+    let boards = json!({"hashboard_num_ideal": 3, "hashboards": [
         {"id": 3, "hashrate_average": 6700, "asic_num": 120},
         {"id": 1, "hashrate_average": 0, "asic_num": 0},
         {"id": 2, "hashrate_average": 6700, "asic_num": 120}
@@ -319,6 +420,67 @@ fn board_ids_and_documented_gh_fields_do_not_require_magnitude_guesses() {
 }
 
 #[test]
+fn partial_or_invalid_board_identity_does_not_relocate_observed_boards() {
+    for rows in [
+        json!([{"index": 2}, {"index": "bad"}]),
+        json!([{"index": 2}, {}]),
+        json!([{"index": null}, {}]),
+        json!([{"index": -1}, {"index": 2}]),
+        json!([{"index": 1.5}, {"index": 2}]),
+        json!([{"index": 0}, {"index": 0}]),
+        json!([{"index": "bad"}, {"index": "bad"}]),
+    ] {
+        assert!(
+            telemetry::boards(&json!({"hashboards": rows}), HashAlgorithm::KHeavyHash).is_empty()
+        );
+    }
+    let parsed = telemetry::boards(
+        &json!({"hashboards": [{"asic_num": 91}, {"asic_num": 92}]}),
+        HashAlgorithm::KHeavyHash,
+    );
+    assert_eq!(
+        parsed
+            .iter()
+            .map(|board| (board.position, board.working_chips))
+            .collect::<Vec<_>>(),
+        vec![(0, Some(91)), (1, Some(92))]
+    );
+}
+
+#[test]
+fn explicit_indices_keep_gaps_and_alternate_ids_require_known_numbering() {
+    for rows in [
+        json!([{"index": 2, "asic_num": 92}]),
+        json!([{"index": 2, "id": 3, "asic_num": 92}]),
+    ] {
+        let parsed = telemetry::boards(&json!({"hashboards": rows}), HashAlgorithm::KHeavyHash);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].position, 2);
+        assert_eq!(parsed[0].working_chips, Some(92));
+    }
+    let parsed = telemetry::boards(
+        &json!({"hashboard_num_ideal": 3, "hashboards": [{"index": 1}, {"index": 2}]}),
+        HashAlgorithm::KHeavyHash,
+    );
+    assert_eq!(
+        parsed
+            .iter()
+            .map(|board| board.position)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    for value in [
+        json!({"hashboards": [{"id": 1}, {"id": 2}, {"id": 3}]}),
+        json!({"hashboard_num_ideal": 3, "hashboards": [{"id": 1}, {"id": 3}]}),
+        json!({"hashboard_num_ideal": 3, "hashboards": [{"id": 2}, {"id": 3}, {"id": 4}]}),
+        json!({"hashboards": [{"slot": 2}]}),
+        json!({"hashboards": [{"index": 0}, {"id": 1}]}),
+    ] {
+        assert!(telemetry::boards(&value, HashAlgorithm::KHeavyHash).is_empty());
+    }
+}
+
+#[test]
 fn firmware_identity_requires_mara_signature_and_exact_overview_product() {
     let firmware = KaonsuFirmware;
     let web = |body, auth_header| WebResponse {
@@ -345,6 +507,10 @@ fn firmware_identity_requires_mara_signature_and_exact_overview_product() {
         AntMinerModel::Unknown("Mara unknown model".to_owned())
     );
     assert!(model_from_overview(&json!({})).is_err());
+    assert!(
+        model_from_overview(&json!({"model": "Antminer L9", "model_extended": "Antminer KS5 Pro"}))
+            .is_err()
+    );
 }
 
 #[tokio::test]

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Translation of sanitized Mara/KaonSu firmware payload contracts.
 use asic_rs_core::data::{
     board::BoardData,
     device::HashAlgorithm,
@@ -10,7 +9,7 @@ use asic_rs_core::data::{
 };
 use measurements::{AngularVelocity, Power, Temperature};
 use serde_json::Value;
-use std::{collections::BTreeSet, str::FromStr};
+use std::{collections::BTreeSet, str::FromStr, time::Duration};
 
 pub(crate) fn payload<'a>(value: &'a Value, _key: Option<&str>) -> Option<&'a Value> {
     let value = value
@@ -44,8 +43,12 @@ fn rate(
         value: number(value).filter(|value| *value >= 0.0)?,
         unit,
         algo,
-    }
-    .as_default_unit();
+    };
+    let rate = if algo == HashAlgorithm::Unknown {
+        rate
+    } else {
+        rate.as_default_unit()
+    };
     rate.value.is_finite().then_some(rate)
 }
 pub(crate) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
@@ -56,8 +59,7 @@ pub(crate) fn hashrate(value: &Value, algo: HashAlgorithm) -> Option<HashRate> {
         "hashrate_average",
     ] {
         if let Some(raw) = value.get(key) {
-            // Explicit zero/invalid samples never fall through to an earlier
-            // average. The native KaonSu contract defaults aggregate rate to TH/s.
+            // Do not replace a stopped or invalid current sample with an older average.
             return rate(
                 raw,
                 value
@@ -74,9 +76,7 @@ pub(crate) fn expected_hashrate(value: &Value, algo: HashAlgorithm) -> Option<Ha
     let value = payload(value, None)?;
     for key in ["hashrate_stock", "hashrate_sales", "hashrate_ideal"] {
         if let Some(raw) = value.get(key) {
-            // Native source documents the ideal field in GH/s; avoid deciding
-            // between units from an amount/capacity label. An explicit per-field
-            // unit handles builds with another representation.
+            // The ideal field uses GH/s even on builds reporting aggregates in TH/s.
             let unit = value.get(format!("{key}_unit")).or_else(|| {
                 if key == "hashrate_ideal" {
                     None
@@ -98,6 +98,14 @@ pub(crate) fn power(value: &Value) -> Option<Power> {
     number(payload(value, None)?.get("power_consumption_estimated")?)
         .filter(|value| *value >= 0.0)
         .map(Power::from_watts)
+}
+pub(crate) fn uptime(value: &Value) -> Option<Duration> {
+    let seconds = number(payload(value, None)?.get("elapsed")?)?;
+    Duration::try_from_secs_f64(seconds).ok()
+}
+pub(crate) fn expected_boards(value: &Value) -> Option<u8> {
+    let count = unsigned(payload(value, None)?.get("hashboard_num_ideal")?)?;
+    u8::try_from(count).ok().filter(|count| *count > 0)
 }
 pub(crate) fn reported_max_temperature(value: &Value) -> Option<Temperature> {
     number(payload(value, None)?.get("temperature_max")?)
@@ -132,7 +140,15 @@ fn minimum(values: &[f64]) -> Option<Temperature> {
         .map(Temperature::from_celsius)
 }
 
+#[cfg(test)]
 pub(crate) fn boards(value: &Value, algo: HashAlgorithm) -> Vec<BoardData> {
+    boards_with_unit(value, algo, None)
+}
+pub(crate) fn boards_with_unit(
+    value: &Value,
+    algo: HashAlgorithm,
+    aggregate_unit: Option<&Value>,
+) -> Vec<BoardData> {
     let Some(value) = payload(value, None) else {
         return vec![];
     };
@@ -146,23 +162,43 @@ pub(crate) fn boards(value: &Value, algo: HashAlgorithm) -> Vec<BoardData> {
     if rows.iter().any(|row| !row.is_object()) {
         return vec![];
     }
-    let ids = rows
+    let raw_ids = rows
         .iter()
         .map(|row| {
-            ["id", "slot", "chain_id", "index"]
+            ["index", "id", "slot", "chain_id"]
                 .into_iter()
-                .find_map(|key| row.get(key))
-                .and_then(unsigned)
+                .find_map(|key| row.get(key).map(|value| (key, value)))
         })
         .collect::<Vec<_>>();
-    let valid_ids = ids.iter().filter_map(|id| *id).collect::<BTreeSet<_>>();
-    if ids.iter().all(Option::is_some) && valid_ids.len() != rows.len() {
+    let id_field = raw_ids.iter().find_map(|id| id.map(|(key, _)| key));
+    let explicit_ids = id_field.is_some();
+    if raw_ids
+        .iter()
+        .flatten()
+        .any(|(key, _)| Some(*key) != id_field)
+    {
         return vec![];
     }
-    let one_based = ids.iter().all(Option::is_some) && valid_ids.first().is_some_and(|id| *id >= 1);
+    let ids = raw_ids
+        .into_iter()
+        .map(|id| id.and_then(|(_, value)| unsigned(value)))
+        .collect::<Vec<_>>();
+    let valid_ids = ids.iter().filter_map(|id| *id).collect::<BTreeSet<_>>();
+    if explicit_ids && (ids.iter().any(Option::is_none) || valid_ids.len() != rows.len()) {
+        return vec![];
+    }
+    let indexed = id_field == Some("index");
+    let one_based = explicit_ids
+        && !indexed
+        && expected_boards(value).is_some_and(|count| {
+            rows.len() == usize::from(count) && valid_ids.iter().copied().eq(1..=u16::from(count))
+        });
+    if explicit_ids && !indexed && !one_based && !valid_ids.contains(&0) {
+        return vec![];
+    }
     let mut output = Vec::new();
     for (ordinal, row) in rows.iter().enumerate() {
-        let position = if ids.iter().all(Option::is_some) {
+        let position = if explicit_ids {
             ids[ordinal].and_then(|id| {
                 if one_based {
                     id.checked_sub(1)
@@ -188,7 +224,15 @@ pub(crate) fn boards(value: &Value, algo: HashAlgorithm) -> Vec<BoardData> {
                 board.hashrate = rate(
                     raw,
                     row.get(format!("{key}_unit"))
-                        .or_else(|| row.get("hashrate_unit")),
+                        .or_else(|| row.get("hashrate_unit"))
+                        .or_else(|| value.get("hashrate_unit"))
+                        // The firmware contract fixes board averages in GH/s.
+                        // Its live 10-minute rate follows the aggregate unit.
+                        .or_else(|| {
+                            (key == "hashrate_realtime_10m")
+                                .then_some(aggregate_unit)
+                                .flatten()
+                        }),
                     default,
                     algo,
                 );
@@ -244,13 +288,13 @@ pub(crate) fn fans(value: &Value) -> Vec<FanData> {
 }
 fn descriptions(value: &Value) -> impl Iterator<Item = &str> {
     [
-        "status",
-        "work_mode",
-        "work-mode",
         "indicator_long",
         "status_long",
         "indicator",
         "description",
+        "status",
+        "work_mode",
+        "work-mode",
     ]
     .into_iter()
     .filter_map(|key| value.get(key).and_then(Value::as_str))
@@ -298,19 +342,9 @@ pub(crate) fn messages(value: &Value) -> Vec<MinerMessage> {
     } else {
         MessageSeverity::Info
     };
-    [
-        "indicator_long",
-        "status_long",
-        "indicator",
-        "description",
-        "status",
-        "work_mode",
-        "work-mode",
-    ]
-    .into_iter()
-    .filter_map(|key| {
-        let text = value.get(key)?.as_str()?.trim();
-        (!text.is_empty()).then(|| MinerMessage::new(0, 0, text.to_owned(), severity.clone()))
-    })
-    .collect()
+    descriptions(value)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| MinerMessage::new(0, 0, text.to_owned(), severity.clone()))
+        .collect()
 }

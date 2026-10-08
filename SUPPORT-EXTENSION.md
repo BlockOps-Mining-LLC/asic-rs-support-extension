@@ -3,8 +3,10 @@
 A public extension of [256foundation/asic-rs](https://github.com/256foundation/asic-rs)
 for additional ASIC models and firmware telemetry. Anyone can use, fork, or
 contribute under the retained Apache-2.0 license. Upstream history is preserved;
-the complete extension is maintained on `support-extension-runtime`. The
-`support-extension` branch contains model additions proposed upstream separately.
+the complete extension is maintained on the
+[fork's default branch](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension).
+The [telemetry-support-expansion proposal](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/tree/telemetry-support-expansion)
+is tracked in [upstream PR 413](https://github.com/256foundation/asic-rs/pull/413).
 
 ## First coverage additions
 
@@ -18,9 +20,10 @@ the complete extension is maintained on `support-extension-runtime`. The
 - Unknown hardware chip counts remain unknown instead of becoming zero.
 - Python builds include the IANA timezone database dependency on Windows.
 
-New parser fixtures are synthetic API examples. Passing fixture tests establishes
-parser behavior, not live compatibility with every firmware release. Private
-diagnostics, credentials, pool settings, and worker identities are not included.
+Parser tests include synthetic contracts and reduced, sanitized live captures.
+They establish parser behavior for those response shapes and captured firmware
+cohorts, not live compatibility with every release. Credentials, pool settings,
+worker identities, and private network details are omitted.
 
 Hardware counts were verified through read-only `stats`/`version` RPC telemetry
 from 14 physical stock miners across eight firmware cohorts. Each model has three
@@ -30,6 +33,8 @@ boards: **S21 XP Hyd has 160 ASICs per board**, **S21j XP Hyd has 42**, and
 indexes on a representative of each model. Formatting padding was excluded.
 See the [hardware evidence in the model PR](https://github.com/256foundation/asic-rs/pull/409).
 Existing S21 Pro+, S21+ Hyd, and S21e XP Hyd identities were already upstream.
+The captured S21 Pro+ cohort reports three boards with 65 ASICs each and four
+fans; its hardware template follows those observed counts.
 
 ## Verification boundary
 
@@ -39,7 +44,7 @@ Inherited firmware controls are unchanged and require device-specific checks.
 Applications should validate control behavior separately before enabling
 automation for newly recognized hardware.
 
-## Development coverage awaiting device validation
+## Development coverage and device validation
 
 The current branch adds the following source implementations. These are not
 included in the published `0.8.5.post2` wheels and are not a claim of complete
@@ -47,13 +52,13 @@ fleet compatibility.
 
 | Firmware or model | Added telemetry | Evidence and remaining checks |
 | --- | --- | --- |
-| Stock Bitmain | Modern CGI fallback, current and expected board rates, serials, frequency, actual chip counts, fan padding, uptime and power field provenance | Sanitized captures from three hydro models; remaining air-cooled/non-SHA models need live checks |
-| AL1, KS7, S19 NoPIC | Exact model identities and appropriate algorithms; uncertain hardware counts remain unknown | Source-backed identification; live firmware checks pending |
-| Hiveon | Read-only CGMiner telemetry using the stock schema and exact Hiveon identity | Source/fixture tests; live checks pending |
-| IceRiver | Vendor-specific authenticated telemetry, KS-family and AL3 identities, rates, board temperatures/chips, fans, uptime and pools | Source/fixture and local HTTP session tests; live checks pending |
-| KaonSu/Mara | Four telemetry GET paths, per-board rates/chips/temperatures, fans, runtime state and explicit power estimates with original source/indicator | Sanitized existing driver contract; live checks pending |
-| Goldshell | BFGMiner rates, board readings/chips, fans and runtime fields with explicit units | Source-backed contracts; exact fleet products need identification and live checks |
-| Innosilicon | CGMiner and HTTP rates, board readings/chips, fans and reported power | Source-backed contracts; generic inventory/firmware labels do not prove an A9 variant |
+| Stock Bitmain | Modern CGI fallback, current and expected board rates, serials, frequency, actual chip counts, fan padding, uptime and power field provenance | Sanitized Hydro and S3 fleet captures cover hydro, S21 Pro+, KS7, and Z15/Z15 Pro response shapes; other model/firmware cohorts still need live checks |
+| AL1 | Exact model identity and algorithm; uncertain hardware counts remain unknown | Source-backed identification only; live telemetry validation pending |
+| Hiveon | Read-only CGMiner telemetry using the stock schema and exact Hiveon identity | Sanitized S19x88 Hiveon capture; other model/firmware cohorts still need live checks |
+| IceRiver | Vendor-specific authenticated telemetry, KS-family and AL3 identities, rates, board temperatures/chips, fans, uptime and pools | Sanitized AL3 firmware `ICM168_04_02_1810_10306_miner` capture plus synthetic/session tests; KS-family identities remain unverified on live devices |
+| KaonSu/Mara | Four telemetry GET paths, per-board rates/chips/temperatures, fans, runtime state and explicit power estimates with original source/indicator | Sanitized mining and stopped KS5 Pro captures on Mara `rel 3.14_584`; other model/firmware cohorts still need live checks |
+| Goldshell | BFGMiner rates, board readings/chips, fans and runtime fields with explicit units | Sanitized SC5Pro `2.2.0` and unidentified ARI31 `2.2.3` captures; additional model identities remain unverified on live devices |
+| Innosilicon | CGMiner and HTTP rates, board readings/chips, fans and reported power | Source-backed contracts and identities only; generic inventory/firmware labels do not prove an A9 variant, and live telemetry validation remains pending |
 
 Vendor and firmware identity must match before selecting a backend. In
 particular, an AL3 labelled Bitmain is not automatically treated as IceRiver.
@@ -65,8 +70,8 @@ claimed as independently measured wall consumption.
 All newly added firmware backends are read-only and reject arbitrary commands,
 configuration changes and controls. Their authenticated POSTs perform vendor
 login/read operations only. Existing stock controls are unchanged. Remaining
-validation is planned against the other farm networks before a new binary
-release or an upstream pull request.
+validation is planned against the other farm networks before broader
+compatibility claims or a new binary release.
 
 ## Using and contributing
 
@@ -84,7 +89,7 @@ Free-threaded Python is not supported. The fork workflow builds and tests these
 assets before publishing them to GitHub; it does not publish to PyPI or crates.io.
 Registry packages linked in the upstream README refer to upstream releases.
 
-For source development, check out `support-extension-runtime` and use the
+For source development, check out the fork's default branch and use the
 commands below. A source build requires Rust and the platform toolchain; Python
 bindings additionally require Python and Maturin. Add `--features python,abi3`
 when building a stable-ABI wheel.
@@ -119,11 +124,10 @@ package namespaces.
 
 ## Validation
 
-The development candidate passed the complete Rust workspace suite on Windows
-x64 (354 tests, with 21 live-device/example tests ignored), the Python suite
-against a locally built native extension (146 tests), and 18 isolated Go
-telemetry-type/helper tests. Full Go/FFI integration remains a Linux CI check.
-Three documentation-generator tests, formatting and regeneration checks passed.
-These offline checks do not establish live compatibility for the added vendor
-backends or firmware controls. Fresh candidate device acceptance remains pending
-network access; the published wheel pin has not changed.
+Run the development checks against the source revision being deployed; results
+from earlier candidates do not validate a newer revision. Parser regression
+tests cover sanitized live captures and synthetic failure cases. The live
+evidence is limited to the models and firmware cohorts listed above and does
+not establish firmware control support or complete fleet compatibility.
+Full Go/FFI integration requires Linux validation. No new wheels have been
+published for these source changes; the published pin remains `0.8.5.post2`.

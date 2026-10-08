@@ -3,7 +3,7 @@ use crate::{firmware::KaonsuFirmware, telemetry, web::KaonsuWebAPI};
 use asic_rs_core::{
     config::collector::{ConfigCollector, ConfigField, ConfigLocation},
     data::{
-        board::BoardData,
+        board::{BoardData, MinerControlBoard},
         collector::{DataCollector, DataExtractor, DataField, DataLocation},
         command::MinerCommand,
         device::{DeviceInfo, MinerHardware},
@@ -18,7 +18,7 @@ use asic_rs_makes_antminer::models::AntMinerModel;
 use async_trait::async_trait;
 use measurements::{Power, Temperature};
 use serde_json::Value;
-use std::{collections::HashMap, net::IpAddr};
+use std::{collections::HashMap, net::IpAddr, time::Duration};
 
 #[derive(Debug)]
 pub struct KaonsuMiner {
@@ -27,15 +27,14 @@ pub struct KaonsuMiner {
     web: KaonsuWebAPI,
 }
 impl KaonsuMiner {
+    #[cfg(test)]
     pub fn new(ip: IpAddr, model: AntMinerModel) -> Self {
         Self::with_auth(ip, model, Self::default_auth())
     }
     pub fn with_auth(ip: IpAddr, model: AntMinerModel, auth: MinerAuth) -> Self {
         let algo = model.hash_algorithm();
         let mut device_info = DeviceInfo::new(model, KaonsuFirmware, algo);
-        // Mara can report non-stock board shapes. Only per-board asic_num_ideal
-        // is authoritative here; never replace actual zero/unknown values with
-        // a stock model template or a capacity label.
+        // Mara reports its own board shape; stock model capacity is not authoritative.
         device_info.hardware = MinerHardware::default();
         Self {
             ip,
@@ -72,10 +71,13 @@ fn location(command: &'static str, tag: Option<&'static str>) -> DataLocation {
 impl GetDataLocations for KaonsuMiner {
     fn get_locations(&self, field: DataField) -> Vec<DataLocation> {
         match field {
-            DataField::FirmwareVersion => vec![location("overview", None)],
+            DataField::FirmwareVersion | DataField::ControlBoardVersion => {
+                vec![location("overview", None)]
+            }
             DataField::Hashrate
             | DataField::ExpectedHashrate
             | DataField::Wattage
+            | DataField::Uptime
             | DataField::IsMining
             | DataField::OperatingState => vec![location("brief", None)],
             DataField::Hashboards => vec![
@@ -127,8 +129,16 @@ impl HasDefaultAuth for KaonsuMiner {
         MinerAuth::new("root", "root")
     }
 }
+#[async_trait]
 impl Validate for KaonsuMiner {
     type Firmware = KaonsuFirmware;
+
+    async fn revalidate(&self) -> anyhow::Result<bool> {
+        let Ok(model) = crate::firmware::read_identity_with_api(&self.web).await else {
+            return Ok(false);
+        };
+        Ok(model.to_string() == self.device_info.model)
+    }
 }
 impl GetFirmwareVersion for KaonsuMiner {
     fn parse_firmware_version(&self, data: &HashMap<DataField, Value>) -> Option<String> {
@@ -157,15 +167,22 @@ impl GetHashboards for KaonsuMiner {
     fn parse_hashboards(&self, data: &HashMap<DataField, Value>) -> Vec<BoardData> {
         data.get(&DataField::Hashboards)
             .map(|value| {
-                telemetry::boards(
+                telemetry::boards_with_unit(
                     value
                         .get("boards")
                         .filter(|boards| boards.is_object())
                         .unwrap_or(value),
                     self.device_info.algo,
+                    value
+                        .get("brief")
+                        .and_then(|brief| brief.get("hashrate_unit")),
                 )
             })
             .unwrap_or_default()
+    }
+    fn parse_expected_hashboards(&self, data: &HashMap<DataField, Value>) -> Option<u8> {
+        let value = data.get(&DataField::Hashboards)?;
+        telemetry::expected_boards(value.get("boards").unwrap_or(value))
     }
     fn parse_reported_max_temperature(
         &self,
@@ -237,7 +254,7 @@ impl GetMessages for KaonsuMiner {
             .and_then(Value::as_array)
         {
             for board in rows {
-                let identity = ["id", "slot", "chain_id", "index"]
+                let identity = ["index", "id", "slot", "chain_id"]
                     .into_iter()
                     .find_map(|key| board.get(key));
                 for mut message in telemetry::messages(board) {
@@ -254,7 +271,20 @@ impl GetMessages for KaonsuMiner {
 impl GetMAC for KaonsuMiner {}
 impl GetHostname for KaonsuMiner {}
 impl GetApiVersion for KaonsuMiner {}
-impl GetControlBoardVersion for KaonsuMiner {}
+impl GetControlBoardVersion for KaonsuMiner {
+    fn parse_control_board_version(
+        &self,
+        data: &HashMap<DataField, Value>,
+    ) -> Option<MinerControlBoard> {
+        data.get(&DataField::ControlBoardVersion)?
+            .get("control_board")?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .map(MinerControlBoard::unknown)
+    }
+}
 impl GetSerialNumber for KaonsuMiner {}
 impl GetFluidTemperature for KaonsuMiner {}
 impl GetPsuFans for KaonsuMiner {}
@@ -263,7 +293,11 @@ impl GetTuningCapabilities for KaonsuMiner {}
 impl GetTuningPercent for KaonsuMiner {}
 impl GetTuningTarget for KaonsuMiner {}
 impl GetScaledTuningTarget for KaonsuMiner {}
-impl GetUptime for KaonsuMiner {}
+impl GetUptime for KaonsuMiner {
+    fn parse_uptime(&self, data: &HashMap<DataField, Value>) -> Option<Duration> {
+        telemetry::uptime(data.get(&DataField::Uptime)?)
+    }
+}
 impl GetBestShare for KaonsuMiner {}
 impl GetSessionBestShare for KaonsuMiner {}
 impl GetDevFeeConnected for KaonsuMiner {}

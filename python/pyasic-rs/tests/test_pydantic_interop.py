@@ -1131,7 +1131,6 @@ def test_shared_config_names_preserve_python_aliases() -> None:
 
 def test_hardware_helpers_use_shared_names() -> None:
     hardware = MinerHardware.model_validate({"fans": 4, "boards": [78, None, 80]})
-    # Support Extension: a missing board count leaves the total unknown.
     assert hardware.total_chips is None
     assert hardware.chips is None
     assert hardware.board_count == 3

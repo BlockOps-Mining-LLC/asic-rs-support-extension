@@ -14,7 +14,6 @@ asic-rs-makes-antminer.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 diqwest.workspace = true
-macaddr.workspace = true
 measurements.workspace = true
 once_cell.workspace = true
 reqwest.workspace = true
