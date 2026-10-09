@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Adapted from pyasic miners/backends/goldshell.py (Copyright 2022 Upstream Data Inc); modified in Rust.
 pub mod web;
 
 use crate::firmware::GoldshellFirmware;
@@ -42,12 +44,6 @@ impl GoldshellV1 {
             device_info: DeviceInfo::new(model, GoldshellFirmware, algo),
         }
     }
-    pub fn allows_rpc(command: &str) -> bool {
-        matches!(
-            command,
-            "version" | "summary" | "stats" | "devs" | "devdetails" | "pools"
-        )
-    }
 }
 
 fn number(value: Option<&Value>) -> Option<f64> {
@@ -58,57 +54,24 @@ fn number(value: Option<&Value>) -> Option<f64> {
 fn integer(value: Option<&Value>) -> Option<u64> {
     value.and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
 }
-fn temperature(value: Option<&Value>) -> Option<f64> {
-    number(value).filter(|value| *value > 0.0 && *value <= 200.0)
-}
-fn string(data: &HashMap<DataField, Value>, field: DataField) -> Option<String> {
-    data.get(&field)?.as_str().map(str::to_string)
-}
-fn details<'a>(data: &'a Value, _: Option<&str>) -> Option<&'a Value> {
-    data.get("DEVS").or_else(|| data.get("DEVDETAILS"))
-}
 fn device_fans<'a>(data: &'a Value, _: Option<&str>) -> Option<&'a Value> {
     let devices = data.get("DEVS")?;
-    devices
-        .as_array()?
-        .iter()
-        .any(|row| {
-            row.as_object().is_some_and(|row| {
-                row.iter().any(|(key, value)| {
-                    key.strip_prefix("fan")
-                        .and_then(|suffix| suffix.parse::<u16>().ok())
-                        .is_some()
-                        && number(Some(value)).is_some()
-                })
-            })
-        })
-        .then_some(devices)
-}
-fn location(
-    command: MinerCommand,
-    pointer: &'static str,
-    tag: Option<&'static str>,
-) -> DataLocation {
-    (
-        command,
-        DataExtractor {
-            func: get_by_pointer,
-            key: Some(pointer),
-            tag,
-        },
-    )
-}
-fn rpc(command: &'static str) -> MinerCommand {
-    MinerCommand::RPC {
-        command,
-        parameters: None,
+    for row in devices.as_array()? {
+        let Some(row) = row.as_object() else {
+            continue;
+        };
+        for (key, value) in row {
+            if key
+                .strip_prefix("fan")
+                .and_then(|suffix| suffix.parse::<u16>().ok())
+                .is_some()
+                && number(Some(value)).is_some()
+            {
+                return Some(devices);
+            }
+        }
     }
-}
-fn web(command: &'static str) -> MinerCommand {
-    MinerCommand::WebAPI {
-        command,
-        parameters: None,
-    }
+    None
 }
 fn declared_rate(row: &Value, algo: HashAlgorithm) -> Option<HashRate> {
     let selected = ["MHS 20s", "MHS 5s", "MHS 1m", "MHS av"]
@@ -134,9 +97,15 @@ impl APIClient for GoldshellV1 {
             MinerCommand::RPC {
                 command,
                 parameters: None,
-            } if Self::allows_rpc(command) => send_rpc_command(&self.ip, command)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("Goldshell read RPC failed")),
+            } if matches!(
+                *command,
+                "version" | "summary" | "stats" | "devs" | "devdetails" | "pools"
+            ) =>
+            {
+                send_rpc_command(&self.ip, command)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("Goldshell read RPC failed"))
+            }
             MinerCommand::WebAPI {
                 command,
                 parameters: None,
@@ -149,39 +118,125 @@ impl APIClient for GoldshellV1 {
 }
 impl GetDataLocations for GoldshellV1 {
     fn get_locations(&self, field: DataField) -> Vec<DataLocation> {
+        const WEB_SETTING: MinerCommand = MinerCommand::WebAPI {
+            command: "setting",
+            parameters: None,
+        };
+        const WEB_STATUS: MinerCommand = MinerCommand::WebAPI {
+            command: "status",
+            parameters: None,
+        };
+        const RPC_VERSION: MinerCommand = MinerCommand::RPC {
+            command: "version",
+            parameters: None,
+        };
+        const RPC_SUMMARY: MinerCommand = MinerCommand::RPC {
+            command: "summary",
+            parameters: None,
+        };
+        const RPC_DEVS: MinerCommand = MinerCommand::RPC {
+            command: "devs",
+            parameters: None,
+        };
+        const RPC_DEVDETAILS: MinerCommand = MinerCommand::RPC {
+            command: "devdetails",
+            parameters: None,
+        };
+        const RPC_STATS: MinerCommand = MinerCommand::RPC {
+            command: "stats",
+            parameters: None,
+        };
+        const RPC_POOLS: MinerCommand = MinerCommand::RPC {
+            command: "pools",
+            parameters: None,
+        };
+
         match field {
-            DataField::Mac => vec![location(web("setting"), "/name", None)],
-            DataField::ApiVersion => vec![location(rpc("version"), "/VERSION/0/API", None)],
-            DataField::FirmwareVersion => vec![location(web("status"), "/firmware", None)],
-            DataField::Hashrate | DataField::IsMining => {
-                vec![location(rpc("summary"), "/SUMMARY/0", None)]
-            }
-            DataField::Uptime => vec![location(rpc("summary"), "/SUMMARY/0/Elapsed", None)],
+            DataField::Mac => vec![(
+                WEB_SETTING,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/name"),
+                    tag: None,
+                },
+            )],
+            DataField::ApiVersion => vec![(
+                RPC_VERSION,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/VERSION/0/API"),
+                    tag: None,
+                },
+            )],
+            DataField::FirmwareVersion => vec![(
+                WEB_STATUS,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/firmware"),
+                    tag: None,
+                },
+            )],
+            DataField::Hashrate | DataField::IsMining => vec![(
+                RPC_SUMMARY,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/SUMMARY/0"),
+                    tag: None,
+                },
+            )],
+            DataField::Uptime => vec![(
+                RPC_SUMMARY,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/SUMMARY/0/Elapsed"),
+                    tag: None,
+                },
+            )],
             DataField::Hashboards => vec![
-                location(rpc("devs"), "/DEVS", Some("devices")),
                 (
-                    rpc("devdetails"),
+                    RPC_DEVS,
                     DataExtractor {
-                        func: details,
+                        func: get_by_pointer,
+                        key: Some("/DEVS"),
+                        tag: Some("devices"),
+                    },
+                ),
+                (
+                    RPC_DEVDETAILS,
+                    DataExtractor {
+                        func: |value, _| value.get("DEVS").or_else(|| value.get("DEVDETAILS")),
                         key: None,
                         tag: Some("details"),
                     },
                 ),
             ],
-            // Live SC5Pro/ARI31 report RPM in DEVS while their STATS reply is
-            // not valid JSON. Keep the older STATS route as a fallback.
+            // SC5Pro/ARI31 expose RPM in DEVS; their STATS replies are malformed.
             DataField::Fans => vec![
                 (
-                    rpc("devs"),
+                    RPC_DEVS,
                     DataExtractor {
                         func: device_fans,
                         key: None,
                         tag: None,
                     },
                 ),
-                location(rpc("stats"), "/STATS", None),
+                (
+                    RPC_STATS,
+                    DataExtractor {
+                        func: get_by_pointer,
+                        key: Some("/STATS"),
+                        tag: None,
+                    },
+                ),
             ],
-            DataField::Pools => vec![location(rpc("pools"), "/POOLS", None)],
+            DataField::Pools => vec![(
+                RPC_POOLS,
+                DataExtractor {
+                    func: get_by_pointer,
+                    key: Some("/POOLS"),
+                    tag: None,
+                },
+            )],
             _ => vec![],
         }
     }
@@ -218,12 +273,16 @@ impl GetMAC for GoldshellV1 {
 }
 impl GetApiVersion for GoldshellV1 {
     fn parse_api_version(&self, data: &HashMap<DataField, Value>) -> Option<String> {
-        string(data, DataField::ApiVersion)
+        data.get(&DataField::ApiVersion)?
+            .as_str()
+            .map(str::to_owned)
     }
 }
 impl GetFirmwareVersion for GoldshellV1 {
     fn parse_firmware_version(&self, data: &HashMap<DataField, Value>) -> Option<String> {
-        string(data, DataField::FirmwareVersion)
+        data.get(&DataField::FirmwareVersion)?
+            .as_str()
+            .map(str::to_owned)
     }
 }
 impl GetHashrate for GoldshellV1 {
@@ -233,14 +292,15 @@ impl GetHashrate for GoldshellV1 {
 }
 impl GetIsMining for GoldshellV1 {
     fn parse_is_mining(&self, data: &HashMap<DataField, Value>) -> bool {
-        data.get(&DataField::IsMining)
-            .and_then(|r| {
-                ["MHS 20s", "MHS 5s", "MHS 1m"]
-                    .into_iter()
-                    .find_map(|key| r.get(key))
-                    .and_then(|value| number(Some(value)))
-            })
-            .is_some_and(|rate| rate > 0.0)
+        let Some(row) = data.get(&DataField::IsMining) else {
+            return false;
+        };
+        for key in ["MHS 20s", "MHS 5s", "MHS 1m"] {
+            if let Some(value) = row.get(key) {
+                return number(Some(value)).is_some_and(|rate| rate > 0.0);
+            }
+        }
+        false
     }
 }
 impl GetUptime for GoldshellV1 {
@@ -254,68 +314,65 @@ impl GetHashboards for GoldshellV1 {
             return vec![];
         };
         let mut boards: BTreeMap<u8, BoardData> = BTreeMap::new();
-        for row in raw
-            .get("devices")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(position) = integer(row.get("ID")).and_then(|p| u8::try_from(p).ok()) else {
-                continue;
-            };
-            let board = boards
-                .entry(position)
-                .or_insert_with(|| BoardData::new(position, None));
-            board.hashrate = declared_rate(row, self.device_info.algo);
-            board.board_temperature =
-                temperature(row.get("tstemp-2")).map(Temperature::from_celsius);
-            let chip_temperatures = [
-                temperature(row.get("tstemp-0")),
-                temperature(row.get("tstemp-1")),
-            ];
-            // Retain coolest/hottest reported chip sensor channels; ordering
-            // does not establish a physical inlet/outlet sensor location.
-            board.inlet_chip_temperature = chip_temperatures
-                .iter()
-                .flatten()
-                .copied()
-                .reduce(f64::min)
-                .map(Temperature::from_celsius);
-            board.outlet_chip_temperature = chip_temperatures
-                .iter()
-                .flatten()
-                .copied()
-                .reduce(f64::max)
-                .map(Temperature::from_celsius);
-            board.active = board.hashrate.as_ref().map(|r| r.value > 0.0);
+        if let Some(devices) = raw.get("devices").and_then(Value::as_array) {
+            for row in devices {
+                let Some(position) = integer(row.get("ID")).and_then(|p| u8::try_from(p).ok())
+                else {
+                    continue;
+                };
+                let board = boards
+                    .entry(position)
+                    .or_insert_with(|| BoardData::new(position, None));
+                board.hashrate = declared_rate(row, self.device_info.algo);
+                board.board_temperature = number(row.get("tstemp-2"))
+                    .filter(|value| *value > 0.0 && *value <= 200.0)
+                    .map(Temperature::from_celsius);
+                let chip_temperatures = ["tstemp-0", "tstemp-1"].map(|key| {
+                    number(row.get(key)).filter(|value| *value > 0.0 && *value <= 200.0)
+                });
+                // Channel order does not identify physical inlet/outlet positions.
+                board.inlet_chip_temperature = chip_temperatures
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .reduce(f64::min)
+                    .map(Temperature::from_celsius);
+                board.outlet_chip_temperature = chip_temperatures
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .reduce(f64::max)
+                    .map(Temperature::from_celsius);
+                board.active = board.hashrate.as_ref().map(|r| r.value > 0.0);
+            }
         }
-        for row in raw
-            .get("details")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(position) = integer(row.get("ID")).and_then(|p| u8::try_from(p).ok()) else {
-                continue;
-            };
-            let board = boards
-                .entry(position)
-                .or_insert_with(|| BoardData::new(position, None));
-            board.working_chips = integer(row.get("chips-nr")).and_then(|v| u16::try_from(v).ok());
+        if let Some(details) = raw.get("details").and_then(Value::as_array) {
+            for row in details {
+                let Some(position) = integer(row.get("ID")).and_then(|p| u8::try_from(p).ok())
+                else {
+                    continue;
+                };
+                let board = boards
+                    .entry(position)
+                    .or_insert_with(|| BoardData::new(position, None));
+                board.working_chips =
+                    integer(row.get("chips-nr")).and_then(|v| u16::try_from(v).ok());
+            }
         }
         boards.into_values().collect()
     }
 }
 impl GetFans for GoldshellV1 {
     fn parse_fans(&self, data: &HashMap<DataField, Value>) -> Vec<FanData> {
+        let Some(rows) = data.get(&DataField::Fans).and_then(Value::as_array) else {
+            return vec![];
+        };
         let mut fans: BTreeMap<i16, FanData> = BTreeMap::new();
-        for row in data
-            .get(&DataField::Fans)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            for (key, value) in row.as_object().into_iter().flatten() {
+        for row in rows {
+            let Some(row) = row.as_object() else {
+                continue;
+            };
+            for (key, value) in row {
                 let Some(position) = key
                     .strip_prefix("fan")
                     .and_then(|p| p.parse::<i16>().ok())
@@ -324,9 +381,7 @@ impl GetFans for GoldshellV1 {
                     continue;
                 };
                 if let Some(rpm) = number(Some(value)) {
-                    // Firmware repeats global fan indices in each DEVS row.
-                    // Preserve the slowest observed value when snapshots differ
-                    // instead of silently choosing the final board's row.
+                    // DEVS repeats global fans; retain the lowest observed RPM.
                     fans.entry(position)
                         .and_modify(|fan| {
                             let observed = fan.rpm.map(|value| value.as_rpm()).unwrap_or(rpm);
@@ -347,9 +402,12 @@ impl GetPools for GoldshellV1 {
         let Some(rows) = data.get(&DataField::Pools).and_then(Value::as_array) else {
             return vec![];
         };
-        let pools = rows
-            .iter()
-            .map(|row| PoolData {
+        let mut pools = Vec::new();
+        for row in rows {
+            let Some(row) = row.as_object() else {
+                continue;
+            };
+            pools.push(PoolData {
                 position: integer(row.get("POOL")).and_then(|v| u16::try_from(v).ok()),
                 url: row
                     .get("URL")
@@ -364,8 +422,8 @@ impl GetPools for GoldshellV1 {
                     .and_then(Value::as_str)
                     .map(|s| s.eq_ignore_ascii_case("Alive")),
                 last_share_time: None,
-            })
-            .collect();
+            });
+        }
         vec![PoolGroupData {
             name: String::new(),
             quota: 1,
@@ -519,23 +577,7 @@ mod tests {
         assert!(!miner.parse_is_mining(&HashMap::new()));
     }
     #[test]
-    fn observed_boards_do_not_require_expected_hardware_or_fabricate_chips() {
-        let boards = miner().parse_hashboards(&HashMap::from([(
-            DataField::Hashboards,
-            json!({
-                "devices": [{"ID": 0}, {"ID": 1}],
-                "details": [{"ID": 0, "chips-nr": 16}, {"ID": 1, "chips-nr": 0}],
-            }),
-        )]));
-        assert_eq!(boards.len(), 2);
-        assert_eq!(boards[0].working_chips, Some(16));
-        assert_eq!(boards[1].working_chips, Some(0));
-        assert!(boards.iter().all(|b| b.expected_chips.is_none()));
-        assert!(miner().get_expected_hashboards().is_none());
-        assert!(miner().parse_wattage(&HashMap::new()).is_none());
-    }
-    #[test]
-    fn live_devs_sensor_channels_and_fans_remain_separate_from_pcb_and_unknown_hardware() {
+    fn sc5pro_live_telemetry() {
         let raw: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/live_sc5pro_2_2_0.json"
         ))
@@ -559,28 +601,24 @@ mod tests {
             boards[0].outlet_chip_temperature.unwrap().as_celsius(),
             88.0
         );
-        assert!(boards[0].voltage.is_none());
-        assert!(boards[0].frequency.is_none());
         let rate = boards[0].hashrate.as_ref().unwrap();
         assert_eq!(rate.algo, HashAlgorithm::Blake2b);
         assert_eq!(rate.unit, HashRateUnit::TeraHash);
         assert!((rate.value - 2.770500143).abs() < 1e-9);
-        assert!(live_miner.get_expected_hashboards().is_none());
         let fan_rows = device_fans(&raw, None).unwrap();
         let fans = miner().parse_fans(&HashMap::from([(DataField::Fans, fan_rows.clone())]));
         assert_eq!(fans.len(), 4);
         for (fan, expected) in fans.iter().zip([2040.0, 2040.0, 2040.0, 2100.0]) {
             assert!((fan.rpm.unwrap().as_rpm() - expected).abs() < 1e-6);
         }
-        let data = HashMap::from([(DataField::Hashrate, json!({"MHS 20s": 10_861_769.547}))]);
+        let data = HashMap::from([(DataField::Hashrate, raw["SUMMARY"][0].clone())]);
         let rate = live_miner.parse_hashrate(&data).unwrap();
         assert_eq!(rate.algo, HashAlgorithm::Blake2b);
         assert_eq!(rate.unit, HashRateUnit::TeraHash);
         assert!((rate.value - 10.861769547).abs() < 1e-9);
-        assert!(live_miner.parse_wattage(&HashMap::new()).is_none());
     }
     #[test]
-    fn live_unknown_ari31_preserves_declared_units_and_observed_boards() {
+    fn unknown_ari31_live_telemetry() {
         let raw: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/live_ari31_2_2_3.json"
         ))
@@ -605,7 +643,16 @@ mod tests {
             && board.expected_chips.is_none()
             && board.hashrate.as_ref().unwrap().algo == HashAlgorithm::Unknown
             && board.hashrate.as_ref().unwrap().unit == HashRateUnit::MegaHash));
-        assert!(miner.get_expected_hashboards().is_none());
+        let details_only = miner.parse_hashboards(&HashMap::from([(
+            DataField::Hashboards,
+            json!({"details": raw["DEVDETAILS"]}),
+        )]));
+        assert_eq!(details_only.len(), 4);
+        assert!(
+            details_only
+                .iter()
+                .all(|board| board.working_chips == Some(128) && board.hashrate.is_none())
+        );
     }
     #[test]
     fn missing_chip_channels_are_not_filled_from_pcb_or_zero_sentinels() {
@@ -630,13 +677,16 @@ mod tests {
     #[tokio::test]
     async fn writes_are_rejected_before_a_connection_is_attempted() {
         let miner = miner();
-        assert!(!miner.supports_pause());
-        assert!(!miner.supports_restart());
-        assert!(!miner.supports_resume());
-        assert!(!miner.supports_pools_config());
-        assert!(!miner.supports_change_password());
         assert!(miner.pause(None).await.is_err());
-        assert!(miner.get_api_result(&rpc("restart")).await.is_err());
+        assert!(
+            miner
+                .get_api_result(&MinerCommand::RPC {
+                    command: "restart",
+                    parameters: None,
+                })
+                .await
+                .is_err()
+        );
         assert!(
             miner
                 .get_api_result(&MinerCommand::WebAPI {

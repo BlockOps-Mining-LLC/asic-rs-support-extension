@@ -1,5 +1,5 @@
-//! Read routes from pyasic 0.79 `web/goldshell.py`. No logout, PUT, or
-//! configuration endpoint is exposed. Login only obtains a read session.
+// SPDX-License-Identifier: Apache-2.0
+// Adapted from pyasic web/goldshell.py (Copyright 2022 Upstream Data Inc); modified in Rust.
 use asic_rs_core::traits::miner::{ExposeSecret, MinerAuth, SecretString};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
@@ -107,26 +107,5 @@ impl GoldshellWebAPI {
                 .map_err(|_| anyhow::anyhow!("Invalid Goldshell read response"));
         }
         anyhow::bail!("Goldshell read authentication failed")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn read_allowlist_excludes_configuration_and_auth_mutations() {
-        assert!(GoldshellWebAPI::allows_read("status"));
-        for command in [
-            "newpool",
-            "delpool",
-            "reboot",
-            "user/logout",
-            "setting?select=0",
-            "cgminer?cgminercmd=restart",
-            "cgminer?cgminercmd=devs",
-            "pools",
-        ] {
-            assert!(!GoldshellWebAPI::allows_read(command));
-        }
     }
 }

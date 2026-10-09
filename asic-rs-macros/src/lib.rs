@@ -15,7 +15,6 @@ const HASH_ALGORITHM_VARIANTS: &[&str] = &[
     "Equihash",
     "Handshake",
     "Blake256R14",
-    "Blake3",
     "Unknown",
 ];
 

@@ -237,8 +237,6 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     #[cfg_attr(
         not(any(
             feature = "antminer",
-            feature = "iceriver",
-            feature = "kaonsu",
             feature = "goldshell",
             feature = "auradine",
             feature = "avalonminer",
@@ -265,16 +263,10 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
         asic_rs_firmwares_braiins::firmware::BraiinsFirmware::default(),
     ));
 
-    #[cfg(feature = "antminer")]
-    registry.push(Arc::new(asic_rs_firmwares_antminer::hiveon::HiveonFirmware));
-
     #[cfg(feature = "luxminer")]
     registry.push(Arc::new(
         asic_rs_firmwares_luxminer::firmware::LuxMinerFirmware::default(),
     ));
-
-    #[cfg(feature = "kaonsu")]
-    registry.push(Arc::new(asic_rs_firmwares_kaonsu::firmware::KaonsuFirmware));
 
     #[cfg(feature = "marathon")]
     registry.push(Arc::new(
@@ -305,11 +297,6 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     #[cfg(feature = "goldshell")]
     registry.push(Arc::new(
         asic_rs_firmwares_goldshell::firmware::GoldshellFirmware,
-    ));
-
-    #[cfg(feature = "iceriver")]
-    registry.push(Arc::new(
-        asic_rs_firmwares_iceriver::firmware::IceRiverStockFirmware,
     ));
 
     #[cfg(feature = "futurebit")]
@@ -589,6 +576,27 @@ impl MinerFactory {
         self.discovery_auth_by_firmware
             .insert(firmware.to_string(), auth);
         self
+    }
+
+    /// Set construction credentials by the registered firmware's Display name.
+    pub fn with_firmware_discovery_auth_by_name(
+        mut self,
+        firmware_name: &str,
+        auth: MinerAuth,
+    ) -> Result<Self> {
+        let registry = self
+            .search_firmwares
+            .clone()
+            .unwrap_or_else(default_firmware_registry);
+        let firmware = registry
+            .iter()
+            .find(|firmware| firmware.to_string() == firmware_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Firmware is not registered for discovery authentication")
+            })?;
+        self.discovery_auth_by_firmware
+            .insert(firmware.to_string(), auth);
+        Ok(self)
     }
 
     /// Set the maximum number of addresses scanned at the same time.

@@ -39,9 +39,6 @@ pub enum AntMinerModel {
     #[serde(alias = "ANTMINER KS5 PRO")]
     #[algorithm(HashAlgorithm::KHeavyHash)]
     KS5Pro,
-    #[serde(alias = "ANTMINER KS7")]
-    #[algorithm(HashAlgorithm::KHeavyHash)]
-    KS7,
     #[serde(alias = "ANTMINER L7")]
     #[algorithm(HashAlgorithm::Scrypt)]
     L7,
@@ -102,14 +99,9 @@ pub enum AntMinerModel {
     #[serde(alias = "ANTMINER T17E")]
     #[algorithm(HashAlgorithm::SHA256)]
     T17e,
-    #[serde(alias = "ANTMINER S19", alias = "ANTMINER S19 HIVEON")]
+    #[serde(alias = "ANTMINER S19")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19,
-    #[serde(alias = "ANTMINER S19NOPIC")]
-    #[serde(alias = "ANTMINER S19X88")]
-    #[serde(alias = "ANTMINER S19X88 HIVEON")]
-    #[algorithm(HashAlgorithm::SHA256)]
-    S19NoPIC,
     #[serde(alias = "ANTMINER S19L")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19L,
@@ -131,7 +123,7 @@ pub enum AntMinerModel {
     #[serde(alias = "ANTMINER S19PRO+")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19ProPlus,
-    #[serde(alias = "ANTMINER S19J PRO", alias = "ANTMINER S19JPRO HIVEON")]
+    #[serde(alias = "ANTMINER S19J PRO")]
     #[algorithm(HashAlgorithm::SHA256)]
     S19jPro,
     #[serde(alias = "ANTMINER S19J PRO+")]

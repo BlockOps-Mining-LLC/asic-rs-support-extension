@@ -8,13 +8,14 @@ use asic_rs_core::{
         entry::FirmwareEntry,
         firmware::MinerFirmware,
         identification::{FirmwareIdentification, WebResponse},
+        make::MinerMake,
         miner::{HasAuth, HasDefaultAuth, Miner, MinerAuth},
     },
 };
-use asic_rs_makes_goldshell::models::GoldshellModel;
+use asic_rs_makes_goldshell::{make::GoldshellMake, models::GoldshellModel};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::{fmt::Display, net::IpAddr, str::FromStr};
+use std::{fmt::Display, net::IpAddr};
 
 #[derive(Default, Debug)]
 pub struct GoldshellFirmware;
@@ -41,7 +42,7 @@ pub(crate) fn model_from_status(status: &Value) -> Result<GoldshellModel, ModelS
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .ok_or(ModelSelectionError::UnexpectedModelResponse)?;
-    GoldshellModel::from_str(raw)
+    GoldshellMake::parse_model(raw.to_owned())
 }
 #[async_trait]
 impl MinerFirmware for GoldshellFirmware {
