@@ -40,7 +40,7 @@ fans; its hardware template follows those observed counts.
 
 These additions cover model identification and telemetry parsing. They do not
 establish that a miner control command works on each model and firmware release.
-Inherited firmware controls are unchanged and require device-specific checks.
+Inherited firmware controls require device-specific checks.
 Applications should validate control behavior separately before enabling
 automation for newly recognized hardware.
 
@@ -69,16 +69,30 @@ claimed as independently measured wall consumption.
 
 All newly added firmware backends are read-only and reject arbitrary commands,
 configuration changes and controls. Their authenticated POSTs perform vendor
-login/read operations only. Existing stock controls are unchanged. Remaining
+login/read operations only. Remaining
 validation is planned against the other farm networks before broader
 compatibility claims.
+
+## Stock control update
+
+The `0.8.5.post4` package includes upstream
+[Antminer sleep confirmation fix #417](https://github.com/256foundation/asic-rs/pull/417).
+The modern stock backend rejects CGI failure codes even when `stats` says
+success, preserves the read-side configuration when retrying a mode request,
+and requires sleep-mode readback before reporting a successful pause.
+
+KS5 and KS5 Pro use this shared backend when their firmware exposes a supported
+mode field. This is not a KS5-specific driver or evidence of live KS5 control
+validation. Applications must confirm current hashrate and recovery on the
+exact firmware. Mode-only resume does not restore pools quarantined by an
+application; those holds still need that application's pool-restore route.
 
 ## Using and contributing
 
 The fork works independently as a Rust library with Python and Go bindings.
-The Python distribution is `pyasic-rs-support-extension==0.8.5.post3`; its public
+The Python distribution is `pyasic-rs-support-extension==0.8.5.post4`; its public
 import remains `pyasic_rs`. Install the wheel for your platform from the
-[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post3)
+[fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post4)
 with pip. Do not install upstream `pyasic-rs` into the same environment: both
 distributions own the same import namespace.
 
