@@ -469,6 +469,9 @@ impl GetHashboards for SealMinerV2025 {
                     board_temperature: board_temp,
                     inlet_chip_temperature: intake_temp,
                     outlet_chip_temperature: outlet_temp,
+                    reported_chip_max_temperature: None,
+                    reported_chip_max_status: None,
+                    reported_chip_max_source: None,
                     inlet_fluid_temperature: None,
                     outlet_fluid_temperature: None,
                     expected_chips: self.device_info.hardware.chips_for_board(i),
@@ -479,6 +482,11 @@ impl GetHashboards for SealMinerV2025 {
                     frequency: freq,
                     tuned,
                     active: Some(online),
+                    state: None,
+                    status_description: None,
+                    red_chips: None,
+                    orange_chips: None,
+                    grey_chips: None,
                 }
             })
             .collect()

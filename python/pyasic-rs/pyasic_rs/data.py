@@ -5,7 +5,7 @@ These classes are backed by Rust structs and expose Pydantic-compatible
 applicable.
 """
 
-from pyasic_rs.asic_rs import BoardData, ChipData
+from pyasic_rs.asic_rs import BoardData, ChipData, ChipTemperatureMaxStatus
 from pyasic_rs.asic_rs import (
     HashRateTuningCapabilities,
     PowerTuningCapabilities,
@@ -28,6 +28,7 @@ __all__ = [
     "ChipData",
     "CheckedMinerData",
     "FieldCollectionStatus",
+    "ChipTemperatureMaxStatus",
     "DeviceInfo",
     "HashRateTuningCapabilities",
     "PowerTuningCapabilities",

@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from pyasic_rs.asic_rs import HashAlgorithm
-from pyasic_rs.data import BoardData, HashRate, HashRateUnit, MinerHardware
+from pyasic_rs.data import BoardData, ChipTemperatureMaxStatus, HashRate, HashRateUnit, MinerHardware
 
 
 class BoardModel(BaseModel):
@@ -58,6 +58,40 @@ def test_existing_board_snapshots_do_not_require_new_coolant_fields() -> None:
     assert model.model_dump()["board"]["inlet_fluid_temperature"] is None
     restored = BoardModel.model_validate_json(model.model_dump_json())
     assert restored.board.outlet_fluid_temperature is None
+
+
+def test_board_diagnostics_preserve_zero_and_old_snapshots() -> None:
+    model = BoardModel.model_validate({"board": board_payload(
+        state="failure", status_description="Chain break",
+        red_chips=76, orange_chips=0, grey_chips=12,
+    )})
+    assert model.board.state == "failure"
+    assert model.board.status_description == "Chain break"
+    assert model.board.red_chips == 76
+    assert model.board.orange_chips == 0
+    assert BoardModel.model_validate_json(model.model_dump_json()).board.grey_chips == 12
+
+    old = BoardModel.model_validate({"board": board_payload()}).board
+    assert old.state is None
+    assert old.red_chips is None
+
+
+def test_reported_chip_max_preserves_zero_status_source_and_old_snapshots() -> None:
+    model = BoardModel.model_validate({"board": board_payload(
+        reported_chip_max_temperature=0.0,
+        reported_chip_max_status="ReportedZero",
+        reported_chip_max_source="vnish:chains[].chip_temp.max",
+    )})
+    assert model.board.reported_chip_max_temperature == 0.0
+    assert model.board.reported_chip_max_status == ChipTemperatureMaxStatus.ReportedZero
+    assert model.board.reported_chip_max_source == "vnish:chains[].chip_temp.max"
+    restored = BoardModel.model_validate_json(model.model_dump_json()).board
+    assert restored.reported_chip_max_temperature == 0.0
+    assert restored.reported_chip_max_status == ChipTemperatureMaxStatus.ReportedZero
+
+    old = BoardModel.model_validate({"board": board_payload()}).board
+    assert old.reported_chip_max_temperature is None
+    assert old.reported_chip_max_status is None
 
 
 @pytest.mark.parametrize("field", ["inlet_fluid_temperature", "outlet_fluid_temperature"])

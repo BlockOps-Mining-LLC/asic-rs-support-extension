@@ -4,6 +4,7 @@ use measurements::{Frequency, Temperature, Voltage};
 #[cfg(feature = "python")]
 use pyo3::pyclass;
 use serde::{Deserialize, Serialize};
+use strum::{Display as StrumDisplay, EnumString};
 use ts_rs::TS;
 
 use super::{
@@ -42,6 +43,25 @@ pub struct ChipData {
     pub working: Option<bool>,
 }
 
+#[cfg_attr(feature = "python", pyclass(from_py_object, str, module = "asic_rs"))]
+#[cfg_attr(feature = "python", derive(asic_rs_pydantic::PyPydanticEnum))]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, StrumDisplay, EnumString, TS,
+)]
+/// Raw chip-maximum parsing status; Reported does not certify safe operation.
+pub enum ChipTemperatureMaxStatus {
+    #[cfg_attr(feature = "python", pydantic(value = "Missing"))]
+    Missing,
+    #[cfg_attr(feature = "python", pydantic(value = "Malformed"))]
+    Malformed,
+    #[cfg_attr(feature = "python", pydantic(value = "Invalid"))]
+    Invalid,
+    #[cfg_attr(feature = "python", pydantic(value = "ReportedZero"))]
+    ReportedZero,
+    #[cfg_attr(feature = "python", pydantic(value = "Reported"))]
+    Reported,
+}
+
 #[cfg_attr(feature = "python", pyclass(from_py_object, module = "asic_rs"))]
 #[cfg_attr(feature = "python", asic_rs_pydantic::py_pydantic_model(getters))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
@@ -68,6 +88,26 @@ pub struct BoardData {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub outlet_chip_temperature: Option<Temperature>,
+    /// Explicitly reported per-board chip maximum, including a reported zero.
+    #[serde(
+        default,
+        serialize_with = "serialize_temperature",
+        deserialize_with = "deserialize_temperature"
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub reported_chip_max_temperature: Option<Temperature>,
+    /// Parsing status for the explicit maximum, when this backend reads one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub reported_chip_max_status: Option<ChipTemperatureMaxStatus>,
+    /// Firmware field that supplied the explicit maximum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub reported_chip_max_source: Option<String>,
     /// Coolant entering this hashboard, when a dedicated hydro sensor is reported.
     /// This is not a PCB or chip temperature.
     #[serde(
@@ -113,6 +153,31 @@ pub struct BoardData {
     pub tuned: Option<bool>,
     /// Whether this board is active, as reported or inferred from firmware telemetry
     pub active: Option<bool>,
+    /// Firmware-reported board state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub state: Option<String>,
+    /// Firmware-reported board fault or status description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub status_description: Option<String>,
+    /// Firmware-reported red chip count, without interpreting chip health.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub red_chips: Option<u16>,
+    /// Firmware-reported orange chip count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub orange_chips: Option<u16>,
+    /// Firmware-reported grey chip count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[cfg_attr(feature = "python", pydantic(default = None))]
+    pub grey_chips: Option<u16>,
 }
 
 impl BoardData {
@@ -206,5 +271,46 @@ mod tests {
         let restored: BoardData = serde_json::from_value(json).unwrap();
         assert!(restored.inlet_fluid_temperature.is_none());
         assert!(restored.outlet_fluid_temperature.is_none());
+    }
+
+    #[test]
+    fn board_diagnostics_preserve_zero_and_old_snapshots() {
+        let board = BoardData {
+            state: Some("failure".to_owned()),
+            status_description: Some("Chain break".to_owned()),
+            red_chips: Some(76),
+            orange_chips: Some(0),
+            grey_chips: Some(12),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&board).unwrap();
+        assert_eq!(json["orange_chips"], 0);
+        assert_eq!(serde_json::from_value::<BoardData>(json).unwrap(), board);
+
+        let old = serde_json::to_value(BoardData::default()).unwrap();
+        assert!(old.get("state").is_none());
+        assert!(old.get("red_chips").is_none());
+        let restored: BoardData = serde_json::from_value(old).unwrap();
+        assert!(restored.state.is_none());
+        assert!(restored.red_chips.is_none());
+    }
+
+    #[test]
+    fn reported_chip_max_keeps_zero_and_old_snapshots() {
+        let board = BoardData {
+            reported_chip_max_temperature: Some(Temperature::from_celsius(0.0)),
+            reported_chip_max_status: Some(ChipTemperatureMaxStatus::ReportedZero),
+            reported_chip_max_source: Some("vnish:chains[].chip_temp.max".to_owned()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&board).unwrap();
+        assert_eq!(json["reported_chip_max_temperature"], 0.0);
+        assert_eq!(json["reported_chip_max_status"], "ReportedZero");
+        assert_eq!(serde_json::from_value::<BoardData>(json).unwrap(), board);
+
+        let old = serde_json::to_value(BoardData::default()).unwrap();
+        assert!(old.get("reported_chip_max_temperature").is_none());
+        let restored: BoardData = serde_json::from_value(old).unwrap();
+        assert!(restored.reported_chip_max_status.is_none());
     }
 }

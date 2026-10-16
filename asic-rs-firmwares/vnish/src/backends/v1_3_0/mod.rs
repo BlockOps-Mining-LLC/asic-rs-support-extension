@@ -20,7 +20,7 @@ use asic_rs_core::{
         device::DeviceInfo,
         fan::FanData,
         firmware::RestoreStockOsResult,
-        hashrate::{HashRate, HashRateUnit},
+        hashrate::HashRate,
         message::{MessageSeverity, MinerMessage},
         miner::TuningTarget,
         operating_state::OperatingState,
@@ -458,18 +458,21 @@ impl GetHashboards for VnishV130 {
         else {
             return Vec::new();
         };
-        let unit = hashboards_data
-            .and_then(|v| v.pointer("/unit"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| HashRateUnit::from_str(s).ok())
-            .unwrap_or(HashRateUnit::GigaHash);
+        let unit = super::rate_unit(
+            hashboards_data.and_then(|v| v.pointer("/unit")),
+            self.device_info.algo,
+        );
         let algo = self.device_info.algo;
         let chip_chains = data.get(&DataField::Chips).and_then(|v| v.as_array());
 
         let mut hashboards: Vec<BoardData> =
-            (0..self.device_info.hardware.board_count().unwrap_or(0) as usize)
-                .map(|idx| {
-                    BoardData::new(idx as u8, self.device_info.hardware.chips_for_board(idx))
+            super::board_positions(all_chains, self.device_info.hardware.board_count())
+                .into_iter()
+                .map(|position| {
+                    BoardData::new(
+                        position,
+                        self.device_info.hardware.chips_for_board(position as usize),
+                    )
                 })
                 .collect();
 
@@ -496,46 +499,51 @@ impl GetHashboards for VnishV130 {
             let chain = Value::Object(merged);
             board.hashrate = ["/hashrate_rt", "/hr_realtime"]
                 .iter()
-                .find_map(|&p| chain.pointer(p).and_then(|v| v.as_f64()))
-                .map(|f| {
-                    HashRate {
-                        value: f,
-                        unit,
-                        algo,
-                    }
-                    .as_default_unit()
+                .find_map(|&p| chain.pointer(p).and_then(super::nonnegative_rate))
+                .and_then(|f| {
+                    unit.map(|unit| {
+                        HashRate {
+                            value: f,
+                            unit,
+                            algo,
+                        }
+                        .as_default_unit()
+                    })
                 });
             board.expected_hashrate = ["/hashrate_ideal", "/hr_nominal"]
                 .iter()
-                .find_map(|&p| chain.pointer(p).and_then(|v| v.as_f64()))
-                .map(|f| {
-                    HashRate {
-                        value: f,
-                        unit,
-                        algo,
-                    }
-                    .as_default_unit()
+                .find_map(|&p| chain.pointer(p).and_then(super::nonnegative_rate))
+                .and_then(|f| {
+                    unit.map(|unit| {
+                        HashRate {
+                            value: f,
+                            unit,
+                            algo,
+                        }
+                        .as_default_unit()
+                    })
                 });
             board.board_temperature = chain
                 .pointer("/pcb_temp/max")
-                .and_then(|v| v.as_i64())
-                .map(|t| Temperature::from_celsius(t as f64));
+                .and_then(super::board_sensor_temperature);
             // Per-board chip temperatures: coolest chip -> inlet, hottest -> outlet.
             // Coolant (water) temperatures are reported separately as
             // fluid / outlet_fluid temperatures on the miner, not here.
-            let chip_min = chain.pointer("/chip_temp/min").and_then(|v| v.as_i64());
-            let chip_max = chain.pointer("/chip_temp/max").and_then(|v| v.as_i64());
-            board.inlet_chip_temperature = chip_min.map(|t| Temperature::from_celsius(t as f64));
-            board.outlet_chip_temperature = chip_max.map(|t| Temperature::from_celsius(t as f64));
+            board.inlet_chip_temperature = chain
+                .pointer("/chip_temp/min")
+                .and_then(super::board_sensor_temperature);
+            board.outlet_chip_temperature = chain
+                .pointer("/chip_temp/max")
+                .and_then(super::board_sensor_temperature);
+            let (chip_max, chip_max_status) =
+                super::reported_chip_max(chain.pointer("/chip_temp/max"));
+            board.reported_chip_max_temperature = chip_max;
+            board.reported_chip_max_status = Some(chip_max_status);
+            board.reported_chip_max_source = Some("vnish:chains[].chip_temp.max".to_owned());
             board.working_chips = chain
                 .pointer("/chips")
                 .and_then(|v| v.as_array())
-                .map(|chips| {
-                    chips
-                        .iter()
-                        .filter(|c| c.pointer("/hr").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.0)
-                        .count() as u16
-                });
+                .and_then(|chips| super::working_chip_count(chips));
             board.serial_number = chain
                 .pointer("/serial")
                 .and_then(|v| v.as_str())
@@ -554,8 +562,10 @@ impl GetHashboards for VnishV130 {
                             .iter()
                             .enumerate()
                             .map(|(idx, chip)| {
-                                let hashrate =
-                                    chip.pointer("/hr").and_then(|v| v.as_f64()).map(|f| {
+                                let reported_rate =
+                                    chip.pointer("/hr").and_then(super::nonnegative_rate);
+                                let hashrate = reported_rate.and_then(|f| {
+                                    unit.map(|unit| {
                                         {
                                             HashRate {
                                                 value: f,
@@ -564,8 +574,9 @@ impl GetHashboards for VnishV130 {
                                             }
                                         }
                                         .as_default_unit()
-                                    });
-                                let working = hashrate.as_ref().map(|hr| hr.value > 0.0);
+                                    })
+                                });
+                                let working = reported_rate.map(|rate| rate > 0.0);
                                 ChipData {
                                     position: chip
                                         .pointer("/id")
@@ -575,8 +586,7 @@ impl GetHashboards for VnishV130 {
                                     hashrate,
                                     temperature: chip
                                         .pointer("/temp")
-                                        .and_then(|v| v.as_f64())
-                                        .map(Temperature::from_celsius),
+                                        .and_then(super::board_sensor_temperature),
                                     voltage: chip
                                         .pointer("/volt")
                                         .and_then(|v| v.as_i64())
@@ -614,6 +624,21 @@ impl GetHashboards for VnishV130 {
                 .and_then(|v| v.as_str())
                 .map(|s| s == "mining")
                 .or_else(|| board.hashrate.as_ref().map(|h| h.value > 0.0));
+            board.state = chain
+                .pointer("/status/state")
+                .or_else(|| chain.pointer("/status"))
+                .and_then(Value::as_str)
+                .filter(|state| !state.trim().is_empty())
+                .map(str::to_owned);
+            board.status_description = chain
+                .pointer("/status/description")
+                .or_else(|| chain.pointer("/description"))
+                .and_then(Value::as_str)
+                .filter(|description| !description.trim().is_empty())
+                .map(str::to_owned);
+            board.red_chips = super::chip_status_count(&chain, "red");
+            board.orange_chips = super::chip_status_count(&chain, "orange");
+            board.grey_chips = super::chip_status_count(&chain, "grey");
         }
 
         hashboards
@@ -623,17 +648,17 @@ impl GetHashboards for VnishV130 {
 impl GetHashrate for VnishV130 {
     fn parse_hashrate(&self, data: &HashMap<DataField, Value>) -> Option<HashRate> {
         let field = data.get(&DataField::Hashrate);
-        let value = field?.pointer("/hashrate")?.as_f64()?;
+        let value = super::nonnegative_rate(field?.pointer("/hashrate")?)?;
+        let unit = super::rate_unit(
+            field.and_then(|v| v.pointer("/unit")),
+            self.device_info.algo,
+        )?;
         Some(
             HashRate {
                 value,
                 // `/info`'s `hr_measure`: `"GH/s"`, `"MH/s"` or `"N/A"`. GH/s
                 // when it cannot say, which is what SHA-256 models report.
-                unit: field
-                    .and_then(|v| v.pointer("/unit"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| HashRateUnit::from_str(s).ok())
-                    .unwrap_or(HashRateUnit::GigaHash),
+                unit,
                 algo: self.device_info.algo,
             }
             .as_default_unit(),
@@ -644,17 +669,17 @@ impl GetHashrate for VnishV130 {
 impl GetExpectedHashrate for VnishV130 {
     fn parse_expected_hashrate(&self, data: &HashMap<DataField, Value>) -> Option<HashRate> {
         let field = data.get(&DataField::ExpectedHashrate);
-        let value = field?.pointer("/hashrate")?.as_f64()?;
+        let value = super::nonnegative_rate(field?.pointer("/hashrate")?)?;
+        let unit = super::rate_unit(
+            field.and_then(|v| v.pointer("/unit")),
+            self.device_info.algo,
+        )?;
         Some(
             HashRate {
                 value,
                 // `/info`'s `hr_measure`: `"GH/s"`, `"MH/s"` or `"N/A"`. GH/s
                 // when it cannot say, which is what SHA-256 models report.
-                unit: field
-                    .and_then(|v| v.pointer("/unit"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| HashRateUnit::from_str(s).ok())
-                    .unwrap_or(HashRateUnit::GigaHash),
+                unit,
                 algo: self.device_info.algo,
             }
             .as_default_unit(),
@@ -670,9 +695,14 @@ impl GetFans for VnishV130 {
             && let Some(fans_array) = fans_data.as_array()
         {
             for (idx, fan) in fans_array.iter().enumerate() {
-                if let Some(rpm) = fan.pointer("/rpm").and_then(|v| v.as_i64()) {
+                if let (Ok(position), Some(rpm)) = (
+                    i16::try_from(idx),
+                    fan.pointer("/rpm")
+                        .and_then(Value::as_u64)
+                        .and_then(|rpm| u16::try_from(rpm).ok()),
+                ) {
                     fans.push(FanData {
-                        position: idx as i16,
+                        position,
                         rpm: Some(AngularVelocity::from_rpm(rpm as f64)),
                     });
                 }
@@ -718,7 +748,9 @@ impl GetFluidTemperature for VnishV130 {
 
 impl GetWattage for VnishV130 {
     fn parse_wattage(&self, data: &HashMap<DataField, Value>) -> Option<Power> {
-        data.extract_map::<i64, _>(DataField::Wattage, |w| Power::from_watts(w as f64))
+        data.extract::<i64>(DataField::Wattage)
+            .filter(|watts| *watts >= 0)
+            .map(|watts| Power::from_watts(watts as f64))
     }
 }
 
@@ -1105,7 +1137,9 @@ impl Restart for VnishV130 {
 impl Pause for VnishV130 {
     #[allow(unused_variables)]
     async fn pause(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self.web.stop().await.is_ok())
+        self.web.stop().await?;
+        super::confirm_stopped(&self.web).await?;
+        Ok(true)
     }
 
     fn supports_pause(&self) -> bool {
@@ -1117,7 +1151,10 @@ impl Pause for VnishV130 {
 impl Resume for VnishV130 {
     #[allow(unused_variables)]
     async fn resume(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self.web.start().await.is_ok())
+        if super::needs_start(&self.web).await? {
+            self.web.start().await?;
+        }
+        Ok(true)
     }
 
     fn supports_resume(&self) -> bool {
@@ -1365,18 +1402,337 @@ impl SupportsFanConfig for VnishV130 {
 
 #[cfg(test)]
 mod tests {
+    use asic_rs_core::data::board::ChipTemperatureMaxStatus;
     use asic_rs_core::data::device::HashAlgorithm;
+    use asic_rs_core::data::hashrate::HashRateUnit;
     use asic_rs_core::test::api::MockAPIClient;
     use asic_rs_makes_antminer::models::AntMinerModel;
 
     use super::*;
-    use crate::backends::test::{MockHttpServer, mock_http_server};
+    use crate::backends::test::{MockHttpServer, mock_http_sequence, mock_http_server};
 
     fn miner_with_mock_web(port: u16) -> VnishV130 {
         let ip = IpAddr::from([127, 0, 0, 1]);
         let mut miner = VnishV130::new(ip, AntMinerModel::S19);
         miner.web = VnishWebAPI::new(ip, port, MinerAuth::from_token("test-token"));
         miner
+    }
+
+    #[tokio::test]
+    async fn resume_skips_duplicate_start_when_mining() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![(200, "OK", r#"{"miner_state":"mining"}"#)]).await?;
+        let miner = miner_with_mock_web(server.port);
+
+        assert!(miner.resume(None).await?);
+        let requests = server.task.await??;
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_skips_plain_tuning_and_rejects_unknown_state() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![(200, "OK", r#"{"miner_state":"tuning"}"#)]).await?;
+        assert!(miner_with_mock_web(server.port).resume(None).await?);
+        assert_eq!(server.task.await??.len(), 1);
+
+        let server = mock_http_sequence(vec![(200, "OK", r#"{"miner_state":"starting"}"#)]).await?;
+        let error = miner_with_mock_web(server.port)
+            .resume(None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("miner_state=starting"));
+        assert_eq!(server.task.await??.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_sends_one_start_from_stopped_and_surfaces_failure() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+            (500, "Internal Server Error", ""),
+        ])
+        .await?;
+        let miner = miner_with_mock_web(server.port);
+
+        assert!(miner.resume(None).await.is_err());
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /api/v1/mining/start HTTP/1.1"));
+        assert_eq!(requests.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_missing_state_without_starting() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![(200, "OK", "{}")]).await?;
+        let miner = miner_with_mock_web(server.port);
+
+        let error = miner.resume(None).await.unwrap_err();
+        assert!(error.to_string().contains("missing miner_state"));
+        let requests = server.task.await??;
+        assert_eq!(requests.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pause_waits_for_stopped_after_empty_acknowledgement() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![
+            (200, "OK", ""),
+            (200, "OK", r#"{"miner_state":"mining"}"#),
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+        ])
+        .await?;
+        let miner = miner_with_mock_web(server.port);
+
+        assert!(miner.pause(None).await?);
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("POST /api/v1/mining/stop HTTP/1.1"));
+        assert!(
+            requests[1..]
+                .iter()
+                .all(|request| request.starts_with("GET /api/v1/status HTTP/1.1"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pause_does_not_confirm_continued_mining_or_repeat_stop() -> anyhow::Result<()> {
+        let mut responses = vec![(200, "OK", "")];
+        responses.extend(std::iter::repeat_n(
+            (200, "OK", r#"{"miner_state":"mining"}"#),
+            5,
+        ));
+        let server = mock_http_sequence(responses).await?;
+        let miner = miner_with_mock_web(server.port);
+
+        let error = miner.pause(None).await.unwrap_err();
+        let requests = server.task.await??;
+        assert!(error.to_string().contains("stopped state is unconfirmed"));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST /api/v1/mining/stop HTTP/1.1"))
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_model_keeps_reported_board_rows() {
+        let miner = VnishV130::new(
+            IpAddr::from([127, 0, 0, 1]),
+            AntMinerModel::Unknown("unmapped model".to_string()),
+        );
+        let data = HashMap::from([
+            (
+                DataField::Hashboards,
+                json!({"unit": "GH/s", "chains": [
+                    {"id": 1, "hashrate_rt": 12000.0, "chips": [{"hr": 0.0}, {"hr": -1.0}],
+                     "status": {"state": "mining", "description": "Thermal warning"},
+                     "chip_statuses": {"red": 0, "orange": "bad", "grey": 88}},
+                    {"id": 3, "hashrate_rt": 0.0, "chips": [{"hr": 0.0}],
+                     "status": {"state": "failure", "description": "Chain break"},
+                     "chip_statuses": {"red": 76, "orange": 0, "grey": 12}},
+                    {"id": 4, "hashrate_rt": -1.0,
+                     "chip_statuses": {"red": 70000, "orange": -1, "grey": true}},
+                    {"id": 0, "hashrate_rt": 9000.0}
+                ]}),
+            ),
+            (
+                DataField::Chips,
+                json!([{"id": 1, "chips": [{"hr": -1.0}, {"hr": 0.0}]}]),
+            ),
+            (
+                DataField::Hashrate,
+                json!({"hashrate": -1.0, "unit": "GH/s"}),
+            ),
+            (
+                DataField::ExpectedHashrate,
+                json!({"hashrate": 0.0, "unit": "GH/s"}),
+            ),
+        ]);
+
+        let boards = miner.parse_hashboards(&data);
+        assert_eq!(
+            boards
+                .iter()
+                .map(|board| board.position)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 3]
+        );
+        assert!(boards.iter().all(|board| board.expected_chips.is_none()));
+        assert_eq!(boards[0].working_chips, None);
+        assert_eq!(boards[1].working_chips, Some(0));
+        assert_eq!(boards[0].chips[0].working, None);
+        assert_eq!(boards[0].chips[1].working, Some(false));
+        assert_eq!(boards[0].state.as_deref(), Some("mining"));
+        assert_eq!(
+            boards[0].status_description.as_deref(),
+            Some("Thermal warning")
+        );
+        assert_eq!(boards[0].red_chips, Some(0));
+        assert_eq!(boards[0].orange_chips, None);
+        assert_eq!(boards[0].grey_chips, Some(88));
+        assert_eq!(boards[1].state.as_deref(), Some("failure"));
+        assert_eq!(boards[1].status_description.as_deref(), Some("Chain break"));
+        assert_eq!(boards[1].red_chips, Some(76));
+        assert_eq!(boards[1].orange_chips, Some(0));
+        assert_eq!(boards[2].state, None);
+        assert_eq!(boards[2].red_chips, None);
+        assert_eq!(boards[2].orange_chips, None);
+        assert_eq!(boards[2].grey_chips, None);
+        assert!(boards[2].hashrate.is_none());
+        assert!(miner.parse_hashrate(&data).is_none());
+        assert_eq!(
+            miner.parse_expected_hashrate(&data).map(|rate| rate.value),
+            Some(0.0)
+        );
+        assert_eq!(
+            boards[1].hashrate.as_ref().map(|rate| rate.value),
+            Some(0.0)
+        );
+
+        let mut missing_unit = data.clone();
+        missing_unit
+            .get_mut(&DataField::Hashboards)
+            .and_then(Value::as_object_mut)
+            .expect("hashboard telemetry")
+            .remove("unit");
+        missing_unit
+            .get_mut(&DataField::ExpectedHashrate)
+            .and_then(Value::as_object_mut)
+            .expect("expected rate telemetry")
+            .remove("unit");
+        let unitless_boards = miner.parse_hashboards(&missing_unit);
+        assert!(unitless_boards.iter().all(|board| board.hashrate.is_none()));
+        assert_eq!(unitless_boards[0].chips[1].working, Some(false));
+        assert!(miner.parse_expected_hashrate(&missing_unit).is_none());
+    }
+
+    #[test]
+    fn reported_wattage_keeps_zero_but_rejects_invalid_values() {
+        let miner = VnishV130::new(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S21);
+        for (value, expected) in [
+            (json!(3200), Some(3200.0)),
+            (json!(0), Some(0.0)),
+            (json!(-1), None),
+            (json!("3200"), None),
+            (Value::Null, None),
+        ] {
+            let data = HashMap::from([(DataField::Wattage, value)]);
+            assert_eq!(
+                miner.parse_wattage(&data).map(|power| power.as_watts()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn fan_rpm_keeps_zero_and_ignores_invalid_readings() {
+        let miner = VnishV130::new(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S21);
+        let data = HashMap::from([(
+            DataField::Fans,
+            json!([
+                {"rpm": 6000}, {"rpm": 0}, {"rpm": -1}, {"rpm": 65536},
+                {"rpm": true}, {"rpm": "unavailable"}, {}
+            ]),
+        )]);
+
+        let fans = miner.parse_fans(&data);
+        assert_eq!(
+            fans.iter().map(|fan| fan.position).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert!((fans[0].rpm.unwrap().as_rpm() - 6000.0).abs() < 1e-6);
+        assert_eq!(fans[1].rpm.unwrap().as_rpm(), 0.0);
+    }
+
+    #[test]
+    fn zero_board_sensor_does_not_become_a_safe_temperature() {
+        let miner = VnishV130::new(
+            IpAddr::from([127, 0, 0, 1]),
+            AntMinerModel::Unknown("unmapped model".to_owned()),
+        );
+        let data = HashMap::from([
+            (
+                DataField::Hashboards,
+                json!({"unit": "GH/s", "chains": [
+                    {"id": 1, "hashrate_rt": 12000, "pcb_temp": {"min": 70, "max": 0},
+                     "chip_temp": {"min": 80, "max": 0}},
+                    {"id": 2, "hashrate_rt": 12000, "pcb_temp": {"max": 74},
+                     "chip_temp": {"min": 65, "max": 142}},
+                    {"id": 3, "hashrate_rt": 12000, "chip_temp": {"min": 75}},
+                    {"id": 4, "hashrate_rt": 12000, "chip_temp": {"min": 76, "max": "bad"}},
+                    {"id": 5, "hashrate_rt": 12000, "chip_temp": {"min": 77, "max": -1}}
+                ]}),
+            ),
+            (
+                DataField::Chips,
+                json!([{"id": 1, "chips": [{"temp": 0}, {"temp": 72}]}]),
+            ),
+        ]);
+
+        let boards = miner.parse_hashboards(&data);
+        assert!(boards[0].board_temperature.is_none());
+        assert_eq!(boards[0].inlet_chip_temperature.unwrap().as_celsius(), 80.0);
+        assert!(boards[0].outlet_chip_temperature.is_none());
+        assert_eq!(
+            boards[0]
+                .reported_chip_max_temperature
+                .unwrap()
+                .as_celsius(),
+            0.0
+        );
+        assert_eq!(
+            boards[0].reported_chip_max_status,
+            Some(ChipTemperatureMaxStatus::ReportedZero)
+        );
+        assert_eq!(
+            boards[0].reported_chip_max_source.as_deref(),
+            Some("vnish:chains[].chip_temp.max")
+        );
+        assert!(boards[0].chips[0].temperature.is_none());
+        assert_eq!(boards[0].chips[1].temperature.unwrap().as_celsius(), 72.0);
+        assert_eq!(
+            boards[1].outlet_chip_temperature.unwrap().as_celsius(),
+            142.0
+        );
+        assert_eq!(
+            boards[1].reported_chip_max_status,
+            Some(ChipTemperatureMaxStatus::Reported)
+        );
+        assert_eq!(
+            boards[2].reported_chip_max_status,
+            Some(ChipTemperatureMaxStatus::Missing)
+        );
+        assert!(boards[2].reported_chip_max_temperature.is_none());
+        assert!(boards[2].hashrate.is_some());
+        assert_eq!(
+            boards[3].reported_chip_max_status,
+            Some(ChipTemperatureMaxStatus::Malformed)
+        );
+        assert!(boards[3].reported_chip_max_temperature.is_none());
+        assert_eq!(
+            boards[4].reported_chip_max_status,
+            Some(ChipTemperatureMaxStatus::Invalid)
+        );
+        assert_eq!(
+            boards[4]
+                .reported_chip_max_temperature
+                .unwrap()
+                .as_celsius(),
+            -1.0
+        );
+        assert_eq!(
+            miner
+                .parse_data(data)
+                .average_temperature
+                .unwrap()
+                .as_celsius(),
+            74.0
+        );
     }
 
     #[tokio::test]

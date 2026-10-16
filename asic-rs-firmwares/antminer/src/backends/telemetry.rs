@@ -661,16 +661,17 @@ pub(super) fn hashboards(
                 continue;
             }
             let rate = row.get(&format!("chain_rate{slot}")).and_then(|raw| {
-                if let Some(explicit) = row.get(&format!("CHAIN AVG HASHRATE{slot}")) {
-                    text_rate(explicit, algo)
-                } else if algo == HashAlgorithm::Equihash {
+                if algo == HashAlgorithm::Equihash {
                     if legacy_z15_contract(value, Some(model)) {
                         // The legacy Z15 dashboard displays chain_rateN
                         // directly under its KSol/s board-rate header.
                         make_rate(raw, HashRateUnit::KiloHash, algo)
                     } else {
-                        None
+                        row.get(&format!("CHAIN AVG HASHRATE{slot}"))
+                            .and_then(|raw| text_rate(raw, algo))
                     }
+                } else if let Some(explicit) = row.get(&format!("CHAIN AVG HASHRATE{slot}")) {
+                    text_rate(explicit, algo)
                 } else {
                     let unit = match row.get("rate_unit") {
                         Some(unit) => rate_unit(Some(unit), algo)?,

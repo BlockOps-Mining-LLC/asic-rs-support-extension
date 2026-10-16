@@ -532,3 +532,54 @@ func TestBoardCoolantTelemetry(t *testing.T) {
 		t.Fatalf("older snapshot invented coolant: %+v", old)
 	}
 }
+
+func TestBoardDiagnosticsPreserveZeroAndMissing(t *testing.T) {
+	var board BoardData
+	if err := json.Unmarshal([]byte(`{"position":0,"state":"failure","status_description":"Chain break","red_chips":76,"orange_chips":0,"grey_chips":12}`), &board); err != nil {
+		t.Fatal(err)
+	}
+	if board.State == nil || *board.State != "failure" || board.StatusDescription == nil || *board.StatusDescription != "Chain break" {
+		t.Fatalf("board status: %+v", board)
+	}
+	if board.RedChips == nil || *board.RedChips != 76 || board.OrangeChips == nil || *board.OrangeChips != 0 || board.GreyChips == nil || *board.GreyChips != 12 {
+		t.Fatalf("board diagnostics: %+v", board)
+	}
+	var old BoardData
+	if err := json.Unmarshal([]byte(`{"position":0}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.State != nil || old.StatusDescription != nil || old.RedChips != nil || old.OrangeChips != nil || old.GreyChips != nil {
+		t.Fatalf("old snapshot invented diagnostics: %+v", old)
+	}
+}
+
+func TestReportedChipMaxPreservesZeroAndMissing(t *testing.T) {
+	var board BoardData
+	if err := json.Unmarshal([]byte(`{"position":0,"reported_chip_max_temperature":0,"reported_chip_max_status":"ReportedZero","reported_chip_max_source":"vnish:chains[].chip_temp.max"}`), &board); err != nil {
+		t.Fatal(err)
+	}
+	if board.ReportedChipMaxTemperature == nil || *board.ReportedChipMaxTemperature != 0 || board.ReportedChipMaxStatus == nil || *board.ReportedChipMaxStatus != ChipTemperatureMaxReportedZero {
+		t.Fatalf("reported zero lost: %+v", board)
+	}
+	if board.ReportedChipMaxSource == nil || *board.ReportedChipMaxSource != "vnish:chains[].chip_temp.max" {
+		t.Fatalf("source lost: %+v", board)
+	}
+	encoded, err := json.Marshal(board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored BoardData
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.ReportedChipMaxTemperature == nil || *restored.ReportedChipMaxTemperature != 0 {
+		t.Fatalf("round trip lost zero: %+v", restored)
+	}
+	var old BoardData
+	if err := json.Unmarshal([]byte(`{"position":0}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.ReportedChipMaxTemperature != nil || old.ReportedChipMaxStatus != nil || old.ReportedChipMaxSource != nil {
+		t.Fatalf("old snapshot invented chip maximum: %+v", old)
+	}
+}

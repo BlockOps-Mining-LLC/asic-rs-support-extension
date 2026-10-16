@@ -70,11 +70,14 @@ impl WebAPIClient for VnishWebAPI {
 
         let status = response.status();
         if status.is_success() {
-            let json_data = response
-                .json()
+            let body = response
+                .bytes()
                 .await
                 .map_err(|e| VnishError::ParseError(e.to_string()))?;
-            Ok(json_data)
+            if body.is_empty() && method == Method::POST && command == "mining/stop" {
+                return Ok(Value::Null);
+            }
+            serde_json::from_slice(&body).map_err(|e| VnishError::ParseError(e.to_string()).into())
         } else {
             let code = status.as_u16();
             Err(match code {
