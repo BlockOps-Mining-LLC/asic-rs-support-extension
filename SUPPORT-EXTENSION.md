@@ -104,8 +104,21 @@ application; those holds still need that application's pool-restore route.
 
 ## Using and contributing
 
+The next source milestone is **Support Extension 0.8.6A**. The `A` is the first
+fork revision, not an alpha release. Its native versions are Cargo
+`0.8.6+support.a` and Python `0.8.6.post1`. Subsequent `0.8.6B` and `0.8.6C`
+revisions map to Cargo `0.8.6+support.b` and `0.8.6+support.c`, and Python
+`0.8.6.post2` and `0.8.6.post3`. Cargo build metadata identifies the fork but
+does not order its revisions, so Rust consumers should pin the exact fork
+commit or tag; the Python post-release numbers do order A, B, and C. This fork
+selectively incorporates upstream fixes and does not claim full upstream
+v0.8.6 parity. The current source includes checked telemetry and the selected
+Antminer and VNish control fixes; the published 0.8.5.post4 wheel predates
+those commits. No 0.8.6A wheel has been published yet.
+
 The fork works independently as a Rust library with Python and Go bindings.
-The Python distribution is `pyasic-rs-support-extension==0.8.5.post4`; its public
+The latest published Python distribution is
+`pyasic-rs-support-extension==0.8.5.post4`; its public
 import remains `pyasic_rs`. Install the wheel for your platform from the
 [fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post4)
 with pip. Do not install upstream `pyasic-rs` into the same environment: both

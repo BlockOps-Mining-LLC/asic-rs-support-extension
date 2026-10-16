@@ -118,10 +118,13 @@ jobs:
       - name: Lock release artifacts
         run: |
           python - <<'PY'
-          import hashlib, json, os, pathlib, tomllib, zipfile
+          import hashlib, json, os, pathlib, re, tomllib, zipfile
           project = tomllib.loads(pathlib.Path('python/pyasic-rs/pyproject.toml').read_text())['project']
           name, version = project['name'].replace('_', '-'), project['version']
           assert name == 'pyasic-rs-support-extension'
+          match = re.fullmatch(r'(\d+\.\d+\.\d+)\.post([1-9]\d*)', version)
+          assert match and 1 <= int(match[2]) <= 26
+          display_version = f'{match[1]}{chr(ord("A") + int(match[2]) - 1)}'
           tag = f'{name}-v{version}'
           wheels = {}
           for wheel in sorted(pathlib.Path('dist').glob('*.whl')):
@@ -137,12 +140,14 @@ jobs:
           pathlib.Path('dist/pyasic-rs-wheels.json').write_text(json.dumps({'distribution': name, 'version': version, 'source_revision': os.environ['GITHUB_SHA'], 'wheels': wheels}, indent=2) + '\n')
           pathlib.Path('dist/SHA256SUMS').write_text(''.join(f'{entry["sha256"]}  {entry["url"].rsplit("/", 1)[1]}\n' for entry in wheels.values()))
           pathlib.Path('release-tag.txt').write_text(tag)
+          pathlib.Path('release-display-version.txt').write_text(display_version)
           PY
       - name: Publish fork binary assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=$(cat release-tag.txt)
+          display_version=$(cat release-display-version.txt)
           gh release create "$tag" dist/*.whl dist/pyasic-rs-wheels.json dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --title "Support Extension ${tag#pyasic-rs-support-extension-v}" \
-            --notes "Independent Support Extension Python distribution. Import remains pyasic_rs. CPython 3.11–3.14 ABI3 wheels; Linux x86_64/aarch64/ARMv7 and Windows x64. Offline telemetry/schema tests passed for each wheel; hardware control behavior requires separate device validation. These assets are not published to upstream package registries."
+            --target "$GITHUB_SHA" --title "Support Extension $display_version" \
+            --notes "Independent Support Extension Python distribution. The letter marks a fork revision, not an alpha release or full upstream release parity. Import remains pyasic_rs. CPython 3.11–3.14 ABI3 wheels; Linux x86_64/aarch64/ARMv7 and Windows x64. Offline telemetry/schema tests passed for each wheel; hardware control behavior requires separate device validation. These assets are not published to upstream package registries."
