@@ -44,6 +44,21 @@ Inherited firmware controls require device-specific checks.
 Applications should validate control behavior separately before enabling
 automation for newly recognized hardware.
 
+VNish pause checks for a reported `stopped` state after the stop request. An
+empty HTTP success response is treated as delivery only; if bounded status
+reads do not confirm the state, pause returns an error without resending stop.
+VNish resume reads status before sending a start request. It sends one only
+from a reported `stopped` state, skips a duplicate when mining or tuning, and
+rejects missing or other states without sending. A successful start response
+still requires a separate settled-state check by control applications, as do
+preset writes.
+
+VNish board telemetry retains reported IDs, status, chip colors and the raw
+`chains[].chip_temp.max` value with source and validity status. Missing or
+invalid readings remain unavailable; reported zero stays distinct. Only known
+SHA-256 models use the established GH/s fallback when the unit is missing or
+`N/A`. Older JSON snapshots omit the new optional board fields.
+
 ## Development coverage and device validation
 
 The `0.8.5.post3` package includes the following implementations. Coverage is
@@ -53,11 +68,11 @@ compatibility.
 | Firmware or model | Added telemetry | Evidence and remaining checks |
 | --- | --- | --- |
 | Stock Bitmain | Modern CGI fallback, current and expected board rates, serials, frequency, actual chip counts, fan padding, uptime and power field provenance | Sanitized Hydro and S3 fleet captures cover hydro, S21 Pro+, KS7, and Z15/Z15 Pro response shapes; other model/firmware cohorts still need live checks |
-| AL1 | Exact model identity and algorithm; uncertain hardware counts remain unknown | Source-backed identification only; live telemetry validation pending |
+| AL1, KS7, S19 NoPIC | Exact model identities and appropriate algorithms; uncertain hardware counts remain unknown | Source-backed identification; live firmware checks pending |
 | Hiveon | Read-only CGMiner telemetry using the stock schema and exact Hiveon identity | Sanitized S19x88 Hiveon capture; other model/firmware cohorts still need live checks |
 | IceRiver | Vendor-specific authenticated telemetry, KS-family and AL3 identities, rates, board temperatures/chips, fans, uptime and pools | Sanitized AL3 firmware `ICM168_04_02_1810_10306_miner` capture plus synthetic/session tests; KS-family identities remain unverified on live devices |
 | KaonSu/Mara | Four telemetry GET paths, per-board rates/chips/temperatures, fans, runtime state and explicit power estimates with original source/indicator | Sanitized mining and stopped KS5 Pro captures on Mara `rel 3.14_584`; other model/firmware cohorts still need live checks |
-| Goldshell | BFGMiner rates, board readings/chips, fans and runtime fields with explicit units | Sanitized SC5Pro `2.2.0` and unidentified ARI31 `2.2.3` captures; additional model identities remain unverified on live devices |
+| Goldshell | BFGMiner rates, board readings/chips, fans and runtime fields with explicit units; invalid current rates do not fall back to older windows | Sanitized SC5Pro `2.2.0` and unidentified ARI31 `2.2.3` captures; additional model identities remain unverified on live devices |
 | Innosilicon | CGMiner and HTTP rates, board readings/chips, fans and reported power | Source-backed contracts and identities only; generic inventory/firmware labels do not prove an A9 variant, and live telemetry validation remains pending |
 
 Vendor and firmware identity must match before selecting a backend. In
@@ -89,8 +104,21 @@ application; those holds still need that application's pool-restore route.
 
 ## Using and contributing
 
+The next source milestone is **Support Extension 0.8.6A**. The `A` is the first
+fork revision, not an alpha release. Its native versions are Cargo
+`0.8.6+support.a` and Python `0.8.6.post1`. Subsequent `0.8.6B` and `0.8.6C`
+revisions map to Cargo `0.8.6+support.b` and `0.8.6+support.c`, and Python
+`0.8.6.post2` and `0.8.6.post3`. Cargo build metadata identifies the fork but
+does not order its revisions, so Rust consumers should pin the exact fork
+commit or tag; the Python post-release numbers do order A, B, and C. This fork
+selectively incorporates upstream fixes and does not claim full upstream
+v0.8.6 parity. The current source includes checked telemetry and the selected
+Antminer and VNish control fixes; the published 0.8.5.post4 wheel predates
+those commits. No 0.8.6A wheel has been published yet.
+
 The fork works independently as a Rust library with Python and Go bindings.
-The Python distribution is `pyasic-rs-support-extension==0.8.5.post4`; its public
+The latest published Python distribution is
+`pyasic-rs-support-extension==0.8.5.post4`; its public
 import remains `pyasic_rs`. Install the wheel for your platform from the
 [fork binary release](https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension/releases/tag/pyasic-rs-support-extension-v0.8.5.post4)
 with pip. Do not install upstream `pyasic-rs` into the same environment: both

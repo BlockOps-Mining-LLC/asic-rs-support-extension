@@ -16,7 +16,7 @@ mod asic_rs {
     }
 
     #[pymodule_export]
-    use asic_rs_core::data::collector::DataField;
+    use asic_rs_core::data::collector::{DataField, FieldCollectionStatus};
     #[pymodule_export]
     use asic_rs_core::data::device::HashAlgorithm;
     #[pymodule_export]
@@ -42,7 +42,7 @@ mod asic_rs {
     };
     #[pymodule_export]
     use asic_rs_core::data::{
-        board::{BoardData, ChipData, MinerControlBoard},
+        board::{BoardData, ChipData, ChipTemperatureMaxStatus, MinerControlBoard},
         capabilities::{
             HashRateTuningCapabilities, PowerTuningCapabilities, PresetTuningCapabilities,
             TuningCapabilities,
@@ -53,7 +53,7 @@ mod asic_rs {
             FirmwareImage, FirmwareStats, PyFirmwareUpdate as FirmwareUpdate, RestoreStockOsResult,
         },
         message::{MessageSeverity, MinerComponent, MinerMessage},
-        miner::{MinerData, PyTuningTarget as TuningTarget},
+        miner::{CheckedMinerData, MinerData, PyTuningTarget as TuningTarget},
         operating_state::OperatingState,
         pool::{PoolData, PoolGroupData, PoolScheme, PoolURL},
     };

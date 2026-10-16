@@ -201,6 +201,16 @@ type ChipData struct {
 	Tuned       *bool     `json:"tuned"`
 }
 
+type ChipTemperatureMaxStatus string
+
+const (
+	ChipTemperatureMaxMissing      ChipTemperatureMaxStatus = "Missing"
+	ChipTemperatureMaxMalformed    ChipTemperatureMaxStatus = "Malformed"
+	ChipTemperatureMaxInvalid      ChipTemperatureMaxStatus = "Invalid"
+	ChipTemperatureMaxReportedZero ChipTemperatureMaxStatus = "ReportedZero"
+	ChipTemperatureMaxReported     ChipTemperatureMaxStatus = "Reported"
+)
+
 // BoardData is per-hashboard telemetry.
 type BoardData struct {
 	Position               uint8      `json:"position"`
@@ -209,6 +219,11 @@ type BoardData struct {
 	BoardTemperature       *float64   `json:"board_temperature"`
 	InletChipTemperature   *float64   `json:"inlet_chip_temperature"`
 	OutletChipTemperature  *float64   `json:"outlet_chip_temperature"`
+
+	ReportedChipMaxTemperature *float64                  `json:"reported_chip_max_temperature"`
+	ReportedChipMaxStatus      *ChipTemperatureMaxStatus `json:"reported_chip_max_status"`
+	ReportedChipMaxSource      *string                   `json:"reported_chip_max_source"`
+
 	InletFluidTemperature  *float64   `json:"inlet_fluid_temperature"`
 	OutletFluidTemperature *float64   `json:"outlet_fluid_temperature"`
 	ExpectedChips          *uint16    `json:"expected_chips"`
@@ -219,6 +234,11 @@ type BoardData struct {
 	Frequency              *float64   `json:"frequency"`
 	Tuned                  *bool      `json:"tuned"`
 	Active                 *bool      `json:"active"`
+	State                  *string    `json:"state"`
+	StatusDescription      *string    `json:"status_description"`
+	RedChips               *uint16    `json:"red_chips"`
+	OrangeChips            *uint16    `json:"orange_chips"`
+	GreyChips              *uint16    `json:"grey_chips"`
 }
 
 // FanData is a single fan reading (RPM as float when present).

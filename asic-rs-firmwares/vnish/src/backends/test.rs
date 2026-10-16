@@ -9,6 +9,11 @@ pub(crate) struct MockHttpServer {
     pub(crate) task: tokio::task::JoinHandle<anyhow::Result<String>>,
 }
 
+pub(crate) struct MockHttpSequence {
+    pub(crate) port: u16,
+    pub(crate) task: tokio::task::JoinHandle<anyhow::Result<Vec<String>>>,
+}
+
 async fn read_http_request(socket: &mut TcpStream) -> anyhow::Result<String> {
     let mut request = Vec::new();
     let mut chunk = [0_u8; 1024];
@@ -66,4 +71,29 @@ pub(crate) async fn mock_http_server(
     });
 
     Ok(MockHttpServer { port, task })
+}
+
+pub(crate) async fn mock_http_sequence(
+    responses: Vec<(u16, &'static str, &'static str)>,
+) -> anyhow::Result<MockHttpSequence> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(responses.len());
+        for (status, reason, body) in responses {
+            let (mut socket, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                    .await
+                    .context("timed out waiting for HTTP request")??;
+            requests.push(read_http_request(&mut socket).await?);
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await?;
+        }
+        Ok(requests)
+    });
+
+    Ok(MockHttpSequence { port, task })
 }

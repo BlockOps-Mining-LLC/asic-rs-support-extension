@@ -430,6 +430,9 @@ mod tests {
         use crate::test::json::v2023_07::HIVEON_S19X88_STATS_CAPTURED;
         let miner = HiveonMiner::new("127.0.0.1".parse().unwrap(), AntMinerModel::S19NoPIC);
         let raw: Value = serde_json::from_str(HIVEON_S19X88_STATS_CAPTURED).unwrap();
+        assert_eq!(raw["STATS"][1]["chain_power1"], 454);
+        assert_eq!(raw["STATS"][1]["chain_power2"], 437);
+        assert_eq!(raw["STATS"][1]["chain_power3"], 453);
         let mock = MockAPIClient::new(HashMap::from([(
             MinerCommand::RPC {
                 command: "stats",
