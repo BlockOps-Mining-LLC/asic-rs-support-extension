@@ -764,7 +764,8 @@ impl SetFaultLight for AntMinerV2020 {
 
     #[allow(unused_variables)]
     async fn set_fault_light(&self, fault: bool) -> anyhow::Result<bool> {
-        Ok(self.web.blink(fault).await.is_ok())
+        self.web.blink(fault).await?;
+        Ok(true)
     }
 }
 
@@ -834,7 +835,8 @@ impl SupportsPoolsConfig for AntMinerV2020 {
         let miner_conf = self.web.get_miner_conf().await?;
         let miner_conf = miner_conf_with_pools(&miner_conf, pools);
 
-        Ok(self.web.set_miner_conf(miner_conf).await.is_ok())
+        self.web.set_miner_conf(miner_conf).await?;
+        Ok(true)
     }
 
     fn supports_pools_config(&self) -> bool {

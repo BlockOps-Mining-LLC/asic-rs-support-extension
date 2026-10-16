@@ -22,7 +22,7 @@ use asic_rs_core::{
         hashrate::HashRate,
         message::MinerMessage,
         miner::{MiningMode, TuningTarget},
-        pool::{PoolData, PoolGroupData, PoolURL},
+        pool::{PoolData, PoolGroupData, PoolScheme, PoolURL},
     },
     traits::{miner::*, model::MinerModel},
 };
@@ -133,21 +133,42 @@ fn browser_miner_conf_payload(miner_conf: &Value) -> serde_json::Map<String, Val
 /// `set_miner_conf.cgi` only overwrites the pool slots it is sent, so a list
 /// shorter than the miner's three slots leaves the old trailing pools in
 /// place. Blank the unused slots so they are removed.
-fn pools_payload(config: Vec<PoolGroupConfig>) -> Vec<Value> {
+fn pools_payload(config: Vec<PoolGroupConfig>) -> anyhow::Result<Vec<Value>> {
     let mut pools: Vec<Value> = config
         .into_iter()
         .flat_map(|group| group.pools.into_iter())
         .map(|pool| {
-            json!({
-                "url": pool.url.to_string(),
+            if pool.url.scheme != PoolScheme::StratumV1 || pool.url.pubkey.is_some() {
+                anyhow::bail!("stock Antminer pools require a stratum+tcp URL");
+            }
+            Ok(json!({
+                "url": format!("{}:{}", pool.url.host, pool.url.port),
                 "user": pool.username,
                 "pass": pool.password,
-            })
+            }))
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
+
+    if pools.len() > 3 {
+        anyhow::bail!("stock Antminer supports at most three pools");
+    }
 
     pools.resize(3, json!({ "url": "", "user": "", "pass": "" }));
-    pools
+    Ok(pools)
+}
+
+fn miner_conf_with_pools(miner_conf: &Value, pools: Vec<Value>) -> Value {
+    let mut payload = browser_miner_conf_payload(miner_conf);
+    payload.insert("pools".to_string(), Value::Array(pools));
+    Value::Object(payload)
+}
+
+fn miner_conf_with_read_shape_pools(miner_conf: &Value, pools: Vec<Value>) -> Option<Value> {
+    let mut payload = miner_conf.clone();
+    payload
+        .as_object_mut()?
+        .insert("pools".to_string(), Value::Array(pools));
+    Some(payload)
 }
 
 fn miner_conf_with_miner_mode(miner_conf: &Value, mode: MinerMode) -> Option<Value> {
@@ -791,7 +812,8 @@ impl SetFaultLight for AntMinerV202307 {
 
     #[allow(unused_variables)]
     async fn set_fault_light(&self, fault: bool) -> anyhow::Result<bool> {
-        Ok(self.web.blink(fault).await.is_ok())
+        self.web.blink(fault).await?;
+        Ok(true)
     }
 }
 
@@ -857,13 +879,31 @@ impl SupportsPoolsConfig for AntMinerV202307 {
     }
 
     async fn set_pools_config(&self, config: Vec<PoolGroupConfig>) -> anyhow::Result<bool> {
-        let pools = pools_payload(config);
+        let pools = pools_payload(config)?;
+        let conf = self.web.get_miner_conf().await?;
+        if !conf.is_object() {
+            anyhow::bail!("stock miner config is not a JSON object");
+        }
 
-        Ok(self
+        let response = self
             .web
-            .set_miner_conf(json!({ "pools": pools }))
-            .await
-            .is_ok())
+            .set_miner_conf(miner_conf_with_pools(&conf, pools.clone()))
+            .await?;
+        if miner_conf_write_accepted(&response) {
+            return Ok(true);
+        }
+
+        let read_shape = miner_conf_with_read_shape_pools(&conf, pools)
+            .ok_or_else(|| anyhow::anyhow!("stock miner config is not a JSON object"))?;
+        let response = self.web.set_miner_conf(read_shape).await?;
+        if miner_conf_write_accepted(&response) {
+            return Ok(true);
+        }
+        let code = response
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        anyhow::bail!("stock miner rejected pool configuration (CGI code {code})")
     }
 
     fn supports_pools_config(&self) -> bool {
@@ -1162,13 +1202,60 @@ mod tests {
                 name: String::new(),
                 quota: 1,
                 pools: vec![pool(1), pool(2)],
-            }]),
+            }])
+            .unwrap(),
             vec![
-                json!({"url": "stratum+tcp://pool1.example:3333", "user": "worker.1", "pass": "x"}),
-                json!({"url": "stratum+tcp://pool2.example:3333", "user": "worker.2", "pass": "x"}),
+                json!({"url": "pool1.example:3333", "user": "worker.1", "pass": "x"}),
+                json!({"url": "pool2.example:3333", "user": "worker.2", "pass": "x"}),
                 json!({"url": "", "user": "", "pass": ""}),
             ]
         );
+    }
+
+    #[test]
+    fn pools_payload_rejects_unsupported_scheme_and_extra_slots() {
+        let pool = |url: &str| PoolConfig {
+            url: PoolURL::from(url.to_string()),
+            username: "worker".to_string(),
+            password: "x".to_string(),
+        };
+        let config = |pools| {
+            vec![PoolGroupConfig {
+                name: String::new(),
+                quota: 1,
+                pools,
+            }]
+        };
+
+        assert!(pools_payload(config(vec![pool("stratum+ssl://pool.example:3333")])).is_err());
+        assert!(pools_payload(config(vec![pool("stratum+tcp://pool.example:3333"); 4])).is_err());
+    }
+
+    #[test]
+    fn pool_write_payloads_preserve_required_settings() {
+        let read_config = json!({
+            "pools": [{"url": "old.example:3333", "user": "old", "pass": "x"}],
+            "bitmain-fan-ctrl": true,
+            "bitmain-fan-pwm": "70",
+            "bitmain-work-mode": "2",
+            "bitmain-freq-level": "85",
+            "api-listen": true
+        });
+        let pools = vec![json!({"url": "new.example:3333", "user": "new", "pass": "x"})];
+
+        assert_eq!(
+            miner_conf_with_pools(&read_config, pools.clone()),
+            json!({
+                "pools": pools,
+                "bitmain-fan-ctrl": true,
+                "bitmain-fan-pwm": "70",
+                "bitmain-work-mode": "2",
+                "freq-level": "85"
+            })
+        );
+        let read_shape = miner_conf_with_read_shape_pools(&read_config, pools).unwrap();
+        assert_eq!(read_shape["api-listen"], true);
+        assert_eq!(read_shape["pools"][0]["url"], "new.example:3333");
     }
 
     #[test]

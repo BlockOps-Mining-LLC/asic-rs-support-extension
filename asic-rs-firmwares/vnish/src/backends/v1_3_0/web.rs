@@ -80,9 +80,10 @@ impl WebAPIClient for VnishWebAPI {
             serde_json::from_slice(&body).map_err(|e| VnishError::ParseError(e.to_string()).into())
         } else {
             let code = status.as_u16();
+            let body = response.text().await.unwrap_or_default();
             Err(match code {
                 401 => VnishError::Unauthorized,
-                _ => VnishError::HttpError(code),
+                _ => VnishError::HttpError { status: code, body },
             })?
         }
     }
@@ -231,7 +232,9 @@ impl VnishWebAPI {
                 .map_err(|e| VnishError::ParseError(e.to_string()))?;
             Ok(json_data)
         } else {
-            Err(VnishError::HttpError(status.as_u16()))?
+            let status = status.as_u16();
+            let body = response.text().await.unwrap_or_default();
+            Err(VnishError::HttpError { status, body })?
         }
     }
 
@@ -328,7 +331,9 @@ impl VnishWebAPI {
         let response = self.execute_request(&url, &Method::GET, None).await?;
         let status = response.status();
         if !status.is_success() {
-            Err(VnishError::HttpError(status.as_u16()))?;
+            let status = status.as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(VnishError::HttpError { status, body }.into());
         }
 
         response
@@ -359,8 +364,8 @@ impl VnishWebAPI {
 pub enum VnishError {
     /// Network error (connection issues, DNS resolution, etc.)
     NetworkError(String),
-    /// HTTP error with status code
-    HttpError(u16),
+    /// HTTP error with status code and response body
+    HttpError { status: u16, body: String },
     /// JSON parsing error
     ParseError(String),
     /// Request building error
@@ -381,7 +386,10 @@ impl std::fmt::Display for VnishError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VnishError::NetworkError(msg) => write!(f, "Network error: {msg}"),
-            VnishError::HttpError(code) => write!(f, "HTTP error: {code}"),
+            VnishError::HttpError { status, body } if !body.trim().is_empty() => {
+                write!(f, "HTTP error: {status}: {}", body.trim())
+            }
+            VnishError::HttpError { status, .. } => write!(f, "HTTP error: {status}"),
             VnishError::ParseError(msg) => write!(f, "Parse error: {msg}"),
             VnishError::RequestError(msg) => write!(f, "Request error: {msg}"),
             VnishError::Timeout => write!(f, "Request timeout"),

@@ -1110,11 +1110,10 @@ impl SupportsPoolsConfig for VnishV130 {
             })
             .collect();
 
-        Ok(self
-            .web
+        self.web
             .set_settings(json!({ "miner": { "pools": pools } }))
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
 
     fn supports_pools_config(&self) -> bool {
@@ -1125,7 +1124,8 @@ impl SupportsPoolsConfig for VnishV130 {
 #[async_trait]
 impl Restart for VnishV130 {
     async fn restart(&self) -> anyhow::Result<bool> {
-        Ok(self.web.restart().await.is_ok())
+        self.web.restart().await?;
+        Ok(true)
     }
 
     fn supports_restart(&self) -> bool {
@@ -1517,6 +1517,50 @@ mod tests {
             1
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn refused_controls_report_firmware_reason() -> anyhow::Result<()> {
+        let refusal = r#"{"err":"miner is not running"}"#;
+
+        let server = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(server.port)
+            .pause(None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(refusal));
+        assert!(server.task.await??.starts_with("POST /api/v1/mining/stop"));
+
+        let server = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(server.port)
+            .restart()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(refusal));
+        assert!(
+            server
+                .task
+                .await??
+                .starts_with("POST /api/v1/mining/restart")
+        );
+
+        let server = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(server.port)
+            .set_pools_config(vec![])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(refusal));
+        assert!(server.task.await??.starts_with("POST /api/v1/settings"));
+        Ok(())
+    }
+
+    #[test]
+    fn empty_http_error_body_preserves_status_message() {
+        let error = web::VnishError::HttpError {
+            status: 500,
+            body: " ".to_string(),
+        };
+        assert_eq!(error.to_string(), "HTTP error: 500");
     }
 
     #[test]

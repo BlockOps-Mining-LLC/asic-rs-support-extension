@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 
 use super::firmware::AntMinerFirmwareUpgradeResponseExt;
 
+const SET_MINER_CONF_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Debug)]
 pub struct AntMinerWebAPI {
     ip: IpAddr,
@@ -166,7 +168,12 @@ impl AntMinerWebAPI {
             let json_data = response.json().await.map_err(|e| anyhow!(e.to_string()))?;
             Ok(json_data)
         } else {
-            bail!("HTTP request failed with status code {}", status);
+            let body = response.text().await.unwrap_or_default();
+            let body = Self::truncated_firmware_upgrade_response_body(body.trim());
+            if body.is_empty() {
+                bail!("HTTP request failed with status code {}", status);
+            }
+            bail!("HTTP request failed with status code {}: {}", status, body);
         }
     }
 
@@ -245,13 +252,17 @@ impl AntMinerWebAPI {
             .await
     }
 
+    fn set_miner_conf_timeout(&self) -> Duration {
+        self.timeout.max(SET_MINER_CONF_TIMEOUT)
+    }
+
     pub async fn set_miner_conf(&self, conf: Value) -> Result<Value> {
         self.send_web_command_with_timeout(
             "set_miner_conf",
             false,
             Some(conf),
             Method::POST,
-            self.timeout.max(Duration::from_secs(30)),
+            self.set_miner_conf_timeout(),
         )
         .await
     }
@@ -409,6 +420,21 @@ impl WebAPIClient for AntMinerWebAPI {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_write_allows_restart_before_response() {
+        let ip = "127.0.0.1".parse().unwrap();
+        let auth = MinerAuth::new("root", "secret");
+        assert_eq!(
+            AntMinerWebAPI::new(ip, auth.clone()).set_miner_conf_timeout(),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            AntMinerWebAPI::with_timeout(ip, Duration::from_secs(300), auth)
+                .set_miner_conf_timeout(),
+            Duration::from_secs(300)
+        );
+    }
 
     #[test]
     fn builds_digest_authorization_for_firmware_upload_endpoint() {
