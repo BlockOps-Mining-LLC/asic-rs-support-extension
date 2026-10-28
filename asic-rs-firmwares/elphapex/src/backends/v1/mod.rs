@@ -15,7 +15,7 @@ use asic_rs_core::{
         pools::{PoolConfig, PoolGroupConfig},
     },
     data::{
-        board::{BoardData, MinerControlBoard},
+        board::{BoardData, ChipTemperatureMaxStatus, MinerControlBoard},
         collector::{
             DataCollector, DataExtensions, DataExtractor, DataField, DataLocation, get_by_pointer,
         },
@@ -129,6 +129,56 @@ impl ElphapexV1 {
         Some(Temperature::from_celsius(
             readings.iter().sum::<f64>() / readings.len() as f64,
         ))
+    }
+
+    fn maximum_board_temperature(values: &Value) -> Option<f64> {
+        values
+            .as_array()?
+            .iter()
+            .filter_map(Self::parse_f64)
+            .filter(|value| value.is_finite() && *value > 0.0 && *value <= 200.0)
+            .max_by(f64::total_cmp)
+    }
+
+    fn reported_chip_maximum(
+        value: Option<&Value>,
+    ) -> (Option<Temperature>, ChipTemperatureMaxStatus) {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return (None, ChipTemperatureMaxStatus::Missing);
+        };
+        let Some(values) = value.as_array() else {
+            return (None, ChipTemperatureMaxStatus::Malformed);
+        };
+        let mut maximum: Option<f64> = None;
+        let mut invalid = false;
+        for value in values {
+            if value.is_null() || value.as_str().is_some_and(|text| text.trim().is_empty()) {
+                continue;
+            }
+            let Some(raw) = Self::parse_f64(value) else {
+                return (None, ChipTemperatureMaxStatus::Malformed);
+            };
+            // Elphapex chip sensor arrays use millidegrees Celsius.
+            let temperature = raw / 1000.0;
+            if !temperature.is_finite() {
+                return (None, ChipTemperatureMaxStatus::Invalid);
+            }
+            invalid |= !(0.0..=200.0).contains(&temperature);
+            maximum = Some(maximum.map_or(temperature, |previous| previous.max(temperature)));
+        }
+        match maximum {
+            None => (None, ChipTemperatureMaxStatus::Missing),
+            Some(value) => (
+                Some(Temperature::from_celsius(value)),
+                if invalid {
+                    ChipTemperatureMaxStatus::Invalid
+                } else if value == 0.0 {
+                    ChipTemperatureMaxStatus::ReportedZero
+                } else {
+                    ChipTemperatureMaxStatus::Reported
+                },
+            ),
+        }
     }
 
     fn minimum_chip_temperature(values: &Value) -> Option<Temperature> {
@@ -453,6 +503,26 @@ impl GetControlBoardVersion for ElphapexV1 {
 }
 
 impl GetHashboards for ElphapexV1 {
+    fn parse_reported_max_temperature(
+        &self,
+        data: &HashMap<DataField, Value>,
+    ) -> Option<Temperature> {
+        let stats = data.get(&DataField::Hashboards)?;
+        let stats0 = stats.pointer("/STATS/0").unwrap_or(stats);
+        stats0
+            .get("chain")?
+            .as_array()?
+            .iter()
+            .flat_map(|chain| {
+                [chain.get("temp_pcb"), chain.get("temp_pic")]
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(Self::maximum_board_temperature)
+            .max_by(f64::total_cmp)
+            .map(Temperature::from_celsius)
+    }
+
     fn parse_hashboards(&self, data: &HashMap<DataField, Value>) -> Vec<BoardData> {
         let Some(stats) = data.get(&DataField::Hashboards) else {
             return vec![];
@@ -540,6 +610,10 @@ impl GetHashboards for ElphapexV1 {
             board.outlet_chip_temperature = chain
                 .get("temp_chip")
                 .and_then(Self::average_chip_temperature);
+            let (chip_max, chip_max_status) = Self::reported_chip_maximum(chain.get("temp_chip"));
+            board.reported_chip_max_temperature = chip_max;
+            board.reported_chip_max_status = Some(chip_max_status);
+            board.reported_chip_max_source = Some("elphapex:stats.chain[].temp_chip".to_owned());
             board.serial_number = chain
                 .get("sn")
                 .and_then(Value::as_str)
@@ -1145,6 +1219,12 @@ mod tests {
             Some(56.5)
         );
         assert_eq!(
+            miner_data
+                .reported_max_temperature
+                .map(|temp| temp.as_celsius()),
+            Some(67.0)
+        );
+        assert_eq!(
             miner_data.efficiency, None,
             "zero hashrate fixture cannot produce efficiency"
         );
@@ -1172,6 +1252,16 @@ mod tests {
             .map(|temp| temp.as_celsius())
             .context("missing inlet chip temperature")?;
         assert!((inlet_chip_temp - 25.437).abs() < 1e-9);
+        let average_chip_temp = miner_data.hashboards[3]
+            .outlet_chip_temperature
+            .map(|temp| temp.as_celsius())
+            .context("missing average chip temperature")?;
+        assert!((average_chip_temp - 25.5465).abs() < 1e-9);
+        let reported_chip_max = miner_data.hashboards[3]
+            .reported_chip_max_temperature
+            .map(|temp| temp.as_celsius())
+            .context("missing reported chip maximum")?;
+        assert!((reported_chip_max - 25.687).abs() < 1e-9);
         assert_eq!(
             miner_data.hashboards[3].serial_number.as_deref(),
             Some("10HY24B046N300036H10JC53")
@@ -1201,6 +1291,130 @@ mod tests {
         assert_eq!(pools.pools[1].active, Some(false));
 
         Ok(())
+    }
+
+    #[test]
+    fn reported_pcb_max_does_not_mix_chip_sensor_domains() {
+        let miner = ElphapexV1::new(IpAddr::from([127, 0, 0, 1]), ElphapexModel::DG1Plus);
+        let mut data = HashMap::new();
+        data.insert(
+            DataField::Hashboards,
+            serde_json::json!({"STATS": [{"chain": [
+                {"index": 0, "temp_pcb": [60, 67], "temp_chip": [120000]},
+                {"index": 1, "temp_pcb": [0, 65535, null, "NaN"], "temp_pic": [0],
+                 "temp_chip": ["70000", 81000]}
+            ]}]}),
+        );
+
+        assert_eq!(
+            miner
+                .parse_reported_max_temperature(&data)
+                .map(|temp| temp.as_celsius()),
+            Some(67.0)
+        );
+        let boards = miner.parse_hashboards(&data);
+        assert_eq!(
+            boards[0]
+                .reported_chip_max_temperature
+                .map(|temp| temp.as_celsius()),
+            Some(120.0)
+        );
+        assert_eq!(
+            boards[1]
+                .reported_chip_max_temperature
+                .map(|temp| temp.as_celsius()),
+            Some(81.0)
+        );
+    }
+
+    #[test]
+    fn unavailable_temperature_arrays_have_no_reported_maximum() {
+        let miner = ElphapexV1::new(IpAddr::from([127, 0, 0, 1]), ElphapexModel::DG1Plus);
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"STATS": []}),
+            serde_json::json!({"chain": [{"temp_pcb": 70, "temp_chip": true}]}),
+            serde_json::json!({"STATS": [{"chain": [{
+                "temp_pcb": [0, -127, 65535, 200.1], "temp_pic": null,
+                "temp_chip": ["80000", 81000]
+            }]}]}),
+        ] {
+            let data = HashMap::from([(DataField::Hashboards, payload)]);
+            assert!(miner.parse_reported_max_temperature(&data).is_none());
+        }
+    }
+
+    #[test]
+    fn chip_sensor_maximum_keeps_units_and_parse_status() {
+        let miner = ElphapexV1::new(IpAddr::from([127, 0, 0, 1]), ElphapexModel::DG1Plus);
+        for (values, status, maximum) in [
+            (Value::Null, ChipTemperatureMaxStatus::Missing, None),
+            (
+                serde_json::json!([]),
+                ChipTemperatureMaxStatus::Missing,
+                None,
+            ),
+            (
+                serde_json::json!(["", null]),
+                ChipTemperatureMaxStatus::Missing,
+                None,
+            ),
+            (
+                serde_json::json!(["0", 0]),
+                ChipTemperatureMaxStatus::ReportedZero,
+                Some(0.0),
+            ),
+            (
+                serde_json::json!(["80000", 81000]),
+                ChipTemperatureMaxStatus::Reported,
+                Some(81.0),
+            ),
+            (
+                serde_json::json!(["255000"]),
+                ChipTemperatureMaxStatus::Invalid,
+                Some(255.0),
+            ),
+            (
+                serde_json::json!(["-127000"]),
+                ChipTemperatureMaxStatus::Invalid,
+                Some(-127.0),
+            ),
+            (
+                serde_json::json!(["NaN"]),
+                ChipTemperatureMaxStatus::Invalid,
+                None,
+            ),
+            (
+                serde_json::json!(true),
+                ChipTemperatureMaxStatus::Malformed,
+                None,
+            ),
+            (
+                serde_json::json!(["broken"]),
+                ChipTemperatureMaxStatus::Malformed,
+                None,
+            ),
+        ] {
+            let data = HashMap::from([(
+                DataField::Hashboards,
+                serde_json::json!({
+                    "chain": [{"index": 0, "temp_chip": values}]
+                }),
+            )]);
+            let boards = miner.parse_hashboards(&data);
+            assert_eq!(boards[0].reported_chip_max_status, Some(status));
+            assert_eq!(
+                boards[0]
+                    .reported_chip_max_temperature
+                    .map(|temp| temp.as_celsius()),
+                maximum
+            );
+            assert_eq!(
+                boards[0].reported_chip_max_source.as_deref(),
+                Some("elphapex:stats.chain[].temp_chip")
+            );
+            assert!(miner.parse_reported_max_temperature(&data).is_none());
+        }
     }
 
     #[test]
