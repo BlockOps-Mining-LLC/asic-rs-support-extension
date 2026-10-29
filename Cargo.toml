@@ -9,7 +9,7 @@ keywords.workspace = true
 description = "Simple ASIC management in Rust"
 
 [workspace.package]
-version = "0.8.6+support.a"
+version = "0.8.6+support.b"
 edition = "2024"
 license = "Apache-2.0"
 documentation = "https://256foundation.github.io/asic-rs"
