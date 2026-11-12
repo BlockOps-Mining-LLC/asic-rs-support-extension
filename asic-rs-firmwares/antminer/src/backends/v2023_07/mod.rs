@@ -19,7 +19,7 @@ use asic_rs_core::{
         device::{DeviceInfo, HashAlgorithm},
         fan::FanData,
         firmware::FirmwareImage,
-        hashrate::HashRate,
+        hashrate::{HashRate, HashRateUnit},
         message::MinerMessage,
         miner::{MiningMode, TuningTarget},
         pool::{PoolData, PoolGroupData, PoolScheme, PoolURL},
@@ -385,21 +385,6 @@ impl AntMinerV202307 {
         current
     }
 
-    fn parse_temp_string(temp_str: &str) -> Option<Temperature> {
-        let temps: Vec<f64> = temp_str
-            .split('-')
-            .filter_map(|s| s.parse().ok())
-            .filter(|&temp| temp > 0.0)
-            .collect();
-
-        if !temps.is_empty() {
-            let avg = temps.iter().sum::<f64>() / temps.len() as f64;
-            Some(Temperature::from_celsius(avg))
-        } else {
-            None
-        }
-    }
-
     fn _calculate_average_temp_s21_hyd(chain: &Value) -> Option<Temperature> {
         let mut temps = Vec::new();
 
@@ -523,6 +508,16 @@ impl CollectConfigs for AntMinerV202307 {
 
 impl GetDataLocations for AntMinerV202307 {
     fn get_locations(&self, data_field: DataField) -> Vec<DataLocation> {
+        const RPC_SUMMARY: MinerCommand = MinerCommand::RPC {
+            command: "summary",
+            parameters: None,
+        };
+
+        const RPC_STATS: MinerCommand = MinerCommand::RPC {
+            command: "stats",
+            parameters: None,
+        };
+
         const RPC_VERSION: MinerCommand = MinerCommand::RPC {
             command: "version",
             parameters: None,
@@ -628,18 +623,12 @@ impl GetDataLocations for AntMinerV202307 {
             // cgminer names its summary keys after the unit they are in —
             // `GHS 5s` on SHA-256 models, `MHS 5s` on Scrypt ones — so keep
             // the whole entry and let the parse pick the key that is present.
-            DataField::Hashrate => vec![(
-                RPC_SUMMARY,
-                DataExtractor {
-                    func: get_by_pointer,
-                    key: Some("/SUMMARY/0"),
-                    tag: None,
-                },
-            )],
+            DataField::Hashrate => telemetry::rate_locations(),
             // `total_rateideal`, by contrast, says nothing about its own
             // scale, so carry STATS' `rate_unit` alongside it.
             DataField::ExpectedHashrate => {
-                let mut locations = vec![
+                let mut locations = telemetry::stats_locations();
+                locations.extend([
                     (
                         RPC_STATS,
                         DataExtractor {
@@ -656,7 +645,7 @@ impl GetDataLocations for AntMinerV202307 {
                             tag: Some("unit"),
                         },
                     ),
-                ];
+                ]);
                 if self.device_info.algo == HashAlgorithm::Equihash {
                     locations.push((
                         RPC_SUMMARY,
@@ -669,23 +658,9 @@ impl GetDataLocations for AntMinerV202307 {
                 }
                 locations
             }
-            DataField::Fans => vec![(
-                RPC_STATS,
-                DataExtractor {
-                    func: get_by_pointer,
-                    key: Some("/STATS/1"),
-                    tag: None,
-                },
-            )],
+            DataField::Fans => telemetry::stats_locations(),
             DataField::Hashboards => {
-                let mut locations = vec![(
-                    RPC_STATS,
-                    DataExtractor {
-                        func: get_by_pointer,
-                        key: Some("/STATS/1"),
-                        tag: None,
-                    },
-                )];
+                let mut locations = telemetry::stats_locations();
                 if self.device_info.algo == HashAlgorithm::Equihash {
                     locations.push((
                         RPC_SUMMARY,
@@ -822,81 +797,25 @@ impl GetFirmwareVersion for AntMinerV202307 {
 
 impl GetHashboards for AntMinerV202307 {
     fn parse_hashboards(&self, data: &HashMap<DataField, Value>) -> Vec<BoardData> {
-        let mut hashboards: Vec<BoardData> =
-            (0..self.device_info.hardware.board_count().unwrap_or(0))
-                .map(|idx| {
-                    BoardData::new(idx, self.device_info.hardware.chips_for_board(idx as usize))
-                })
-                .collect();
-
-        let Some(stats_data) = data.get(&DataField::Hashboards).and_then(|v| v.as_object()) else {
-            return hashboards;
-        };
-
-        let algo = self.device_info.algo;
-        let unit = if algo == HashAlgorithm::Equihash {
-            stats_data.get("summary").and_then(equihash_summary_unit)
-        } else {
-            None
-        }
-        .or_else(|| {
-            stats_data
-                .get("rate_unit")
-                .and_then(|v| v.as_str())
-                .and_then(|s| HashRateUnit::from_str(s).ok())
-        })
-        .unwrap_or(HashRateUnit::GigaHash);
-
-        for board in hashboards.iter_mut() {
-            let idx = board.position + 1;
-
-            board.hashrate = stats_data
-                .get(&format!("chain_rate{idx}"))
-                .and_then(Self::parse_f64_field)
-                .map(|r| {
-                    HashRate {
-                        value: r,
-                        unit,
-                        algo,
-                    }
-                    .as_default_unit()
-                });
-
-            // `temp_pcb{idx}` on older generations; newer ones split the
-            // reading into inlet/outlet pairs and omit the combined key.
-            board.board_temperature = stats_data
-                .get(&format!("temp_pcb{idx}"))
-                .and_then(|v| v.as_str())
-                .and_then(Self::parse_temp_string)
-                .or_else(|| {
-                    stats_data
-                        .get(&format!("temp_out_pcb_{idx}"))
-                        .and_then(Self::parse_f64_field)
-                        .filter(|&t| t > 0.0)
-                        .map(Temperature::from_celsius)
-                });
-
-            board.working_chips = stats_data
-                .get(&format!("chain_acn{idx}"))
-                .and_then(|v| v.as_u64())
-                .map(|u| u as u16);
-
-            board.frequency = stats_data
-                .get(&format!("freq{idx}"))
-                .and_then(|v| v.as_u64())
-                .map(|f| Frequency::from_megahertz(f as f64));
-
-            let has_hashrate = board
-                .hashrate
-                .as_ref()
-                .map(|h| h.value > 0.0)
-                .unwrap_or(false);
-            let has_chips = board.working_chips.map(|chips| chips > 0).unwrap_or(false);
-
-            board.active = Some(has_hashrate || has_chips);
-        }
-
-        hashboards
+        data.get(&DataField::Hashboards)
+            .map(|value| {
+                telemetry::hashboards(
+                    value,
+                    &self.device_info.model.to_string(),
+                    self.device_info.algo,
+                    &self.device_info.hardware,
+                )
+            })
+            .unwrap_or_else(|| {
+                (0..self.device_info.hardware.board_count().unwrap_or(0))
+                    .map(|position| {
+                        BoardData::new(
+                            position,
+                            self.device_info.hardware.chips_for_board(position as usize),
+                        )
+                    })
+                    .collect()
+            })
     }
 }
 
@@ -919,6 +838,13 @@ impl GetHashrate for AntMinerV202307 {
                 return None;
             };
             return self.parse_ks5_hashrate(stats);
+        }
+        if let Some(rate) = telemetry::hashrate_for_model(
+            summary_value,
+            self.device_info.algo,
+            Some(&self.device_info.model),
+        ) {
+            return Some(rate);
         }
         let summary = summary_value.as_object()?;
 
@@ -960,17 +886,38 @@ impl GetHashrate for AntMinerV202307 {
 impl GetExpectedHashrate for AntMinerV202307 {
     fn parse_expected_hashrate(&self, data: &HashMap<DataField, Value>) -> Option<HashRate> {
         let field = data.get(&DataField::ExpectedHashrate);
+        if self.device_info.algo == HashAlgorithm::Equihash {
+            let displayed_unit = field
+                .and_then(|value| value.get("summary"))
+                .or_else(|| data.get(&DataField::Hashrate))
+                .and_then(equihash_summary_unit);
+            if let (Some(unit), Some(value)) = (
+                displayed_unit,
+                field
+                    .and_then(|value| value.pointer("/hashrate"))
+                    .and_then(Self::parse_f64_field),
+            ) {
+                return Some(
+                    HashRate {
+                        value,
+                        unit,
+                        algo: self.device_info.algo,
+                    }
+                    .as_default_unit(),
+                );
+            }
+            return field
+                .and_then(|value| telemetry::expected_hashrate(value, self.device_info.algo));
+        }
+        if let Some(rate) =
+            field.and_then(|value| telemetry::expected_hashrate(value, self.device_info.algo))
+        {
+            return Some(rate);
+        }
         let value = field?
             .pointer("/hashrate")
             .and_then(Self::parse_f64_field)?;
-        let displayed_unit = if self.device_info.algo == HashAlgorithm::Equihash {
-            field
-                .and_then(|value| value.get("summary"))
-                .or_else(|| data.get(&DataField::Hashrate))
-                .and_then(equihash_summary_unit)
-        } else {
-            None
-        };
+        let displayed_unit = None;
         Some(
             HashRate {
                 value,
@@ -1023,7 +970,25 @@ impl GetDevFeeConnected for AntMinerV202307 {}
 
 impl GetIsMining for AntMinerV202307 {
     fn parse_is_mining(&self, data: &HashMap<DataField, Value>) -> bool {
-        !data.get(&DataField::IsMining).is_some_and(is_sleep_status)
+        let field = data.get(&DataField::IsMining);
+        let rate = field
+            .and_then(|value| {
+                telemetry::current_rate_for_model(
+                    value,
+                    self.device_info.algo,
+                    Some(&self.device_info.model),
+                )
+            })
+            .or_else(|| {
+                data.get(&DataField::Hashrate).and_then(|value| {
+                    telemetry::current_rate_for_model(
+                        value,
+                        self.device_info.algo,
+                        Some(&self.device_info.model),
+                    )
+                })
+            });
+        telemetry::is_mining(field, rate)
     }
 }
 

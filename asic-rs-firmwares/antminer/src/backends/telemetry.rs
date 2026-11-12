@@ -662,7 +662,18 @@ pub(super) fn hashboards(
             }
             let rate = row.get(&format!("chain_rate{slot}")).and_then(|raw| {
                 if algo == HashAlgorithm::Equihash {
-                    if legacy_z15_contract(value, Some(model)) {
+                    let summary_unit = value
+                        .get("summary")
+                        .and_then(|summary| {
+                            summary
+                                .get("AV HASHRATE")
+                                .or_else(|| summary.get("RT HASHRATE"))
+                        })
+                        .and_then(|rate| text_rate(rate, algo))
+                        .map(|rate| rate.unit);
+                    if let Some(unit) = summary_unit {
+                        make_rate(raw, unit, algo)
+                    } else if legacy_z15_contract(value, Some(model)) {
                         // The legacy Z15 dashboard displays chain_rateN
                         // directly under its KSol/s board-rate header.
                         make_rate(raw, HashRateUnit::KiloHash, algo)

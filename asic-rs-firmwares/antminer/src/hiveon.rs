@@ -298,6 +298,8 @@ impl GetFluidTemperature for HiveonMiner {
     }
 }
 impl GetPsuFans for HiveonMiner {}
+impl GetPsus for HiveonMiner {}
+impl RestartMining for HiveonMiner {}
 impl GetTuningCapabilities for HiveonMiner {}
 impl GetTuningPercent for HiveonMiner {}
 impl GetBestShare for HiveonMiner {}

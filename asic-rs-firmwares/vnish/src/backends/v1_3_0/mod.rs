@@ -1139,6 +1139,7 @@ impl Pause for VnishV130 {
     #[allow(unused_variables)]
     async fn pause(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
         self.web.stop().await?;
+        super::confirm_stopped(&self.web).await?;
         Ok(true)
     }
 
@@ -1151,7 +1152,9 @@ impl Pause for VnishV130 {
 impl Resume for VnishV130 {
     #[allow(unused_variables)]
     async fn resume(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        self.web.start().await?;
+        if super::needs_start(&self.web).await? {
+            self.web.start().await?;
+        }
         Ok(true)
     }
 
@@ -2028,12 +2031,18 @@ mod tests {
         assert!(error.to_string().contains("400"), "{error}");
         assert!(error.to_string().contains(refusal), "{error}");
 
-        let MockHttpServer { port, task } = mock_http_server(400, "Bad Request", refusal).await?;
-        let error = miner_with_mock_web(port).resume(None).await.unwrap_err();
-        assert!(
-            task.await??
-                .starts_with("POST /api/v1/mining/start HTTP/1.1\r\n")
-        );
+        let server = mock_http_sequence(vec![
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+            (400, "Bad Request", refusal),
+        ])
+        .await?;
+        let error = miner_with_mock_web(server.port)
+            .resume(None)
+            .await
+            .unwrap_err();
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("POST /api/v1/mining/start HTTP/1.1\r\n"));
         assert!(error.to_string().contains("400"), "{error}");
         assert!(error.to_string().contains(refusal), "{error}");
 
@@ -2063,15 +2072,25 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_control_calls_still_return_true() -> anyhow::Result<()> {
-        let MockHttpServer { port, task } =
-            mock_http_server(200, "OK", r#"{"success":true}"#).await?;
-        assert!(miner_with_mock_web(port).pause(None).await?);
-        task.await??;
+        let server = mock_http_sequence(vec![
+            (200, "OK", ""),
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+        ])
+        .await?;
+        assert!(miner_with_mock_web(server.port).pause(None).await?);
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("POST /api/v1/mining/stop HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
 
-        let MockHttpServer { port, task } =
-            mock_http_server(200, "OK", r#"{"success":true}"#).await?;
-        assert!(miner_with_mock_web(port).resume(None).await?);
-        task.await??;
+        let server = mock_http_sequence(vec![
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+            (200, "OK", r#"{"success":true}"#),
+        ])
+        .await?;
+        assert!(miner_with_mock_web(server.port).resume(None).await?);
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("POST /api/v1/mining/start HTTP/1.1\r\n"));
 
         let MockHttpServer { port, task } =
             mock_http_server(200, "OK", r#"{"success":true}"#).await?;

@@ -3,10 +3,10 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pyasic_rs"
-version = "0.8.9"
-description = "Python bindings for asic-rs"
-authors = [{ name = "Brett Rowan", email = "121075405+b-rowan@users.noreply.github.com" }]
+name = "pyasic_rs_support_extension"
+version = "0.8.9.post1"
+description = "Python bindings for the ASIC-RS Support Extension"
+authors = [{ name = "BlockOps Mining" }]
 repository = "https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension"
 homepage = "https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension"
 source = "https://github.com/BlockOps-Mining-LLC/asic-rs-support-extension"

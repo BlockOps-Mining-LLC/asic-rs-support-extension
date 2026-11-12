@@ -183,10 +183,6 @@ pub enum HashAlgorithm {
     #[cfg_attr(feature = "python", pydantic(value = "Unknown"))]
     #[serde(rename = "Unknown")]
     Unknown,
-    /// Blake2b mining, as used by Sia.
-    #[cfg_attr(feature = "python", pydantic(value = "Blake2b"))]
-    #[serde(rename = "Blake2b")]
-    Blake2b,
 }
 
 impl HashAlgorithm {

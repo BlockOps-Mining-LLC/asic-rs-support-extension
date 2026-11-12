@@ -118,6 +118,9 @@ dependencies = [
  "asic-rs-firmwares-forgeaxe",
  "asic-rs-firmwares-futurebit",
  "asic-rs-firmwares-goldshell",
+ "asic-rs-firmwares-iceriver",
+ "asic-rs-firmwares-innosilicon",
+ "asic-rs-firmwares-kaonsu",
  "asic-rs-firmwares-luxminer",
  "asic-rs-firmwares-marathon",
  "asic-rs-firmwares-nerdaxe",
@@ -136,6 +139,8 @@ dependencies = [
  "asic-rs-makes-forgeaxe",
  "asic-rs-makes-futurebit",
  "asic-rs-makes-goldshell",
+ "asic-rs-makes-iceriver",
+ "asic-rs-makes-innosilicon",
  "asic-rs-makes-marathon",
  "asic-rs-makes-nerdaxe",
  "asic-rs-makes-proto",
@@ -377,6 +382,57 @@ dependencies = [
  "async-trait",
  "macaddr",
  "measurements",
+ "reqwest",
+ "semver",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "asic-rs-firmwares-iceriver"
+version = "0.8.9"
+dependencies = [
+ "anyhow",
+ "asic-rs-core",
+ "asic-rs-makes-iceriver",
+ "async-trait",
+ "macaddr",
+ "measurements",
+ "pyo3",
+ "reqwest",
+ "semver",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "asic-rs-firmwares-innosilicon"
+version = "0.8.9"
+dependencies = [
+ "anyhow",
+ "asic-rs-core",
+ "asic-rs-makes-innosilicon",
+ "async-trait",
+ "macaddr",
+ "measurements",
+ "reqwest",
+ "semver",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "asic-rs-firmwares-kaonsu"
+version = "0.8.9"
+dependencies = [
+ "anyhow",
+ "asic-rs-core",
+ "asic-rs-makes-antminer",
+ "async-trait",
+ "diqwest",
+ "measurements",
+ "once_cell",
+ "pyo3",
  "reqwest",
  "semver",
  "serde_json",
@@ -674,6 +730,29 @@ dependencies = [
  "asic-rs-macros",
  "serde",
  "serde_json",
+ "strum",
+ "ts-rs",
+]
+
+[[package]]
+name = "asic-rs-makes-iceriver"
+version = "0.8.9"
+dependencies = [
+ "asic-rs-core",
+ "asic-rs-macros",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "strum",
+ "ts-rs",
+]
+
+[[package]]
+name = "asic-rs-makes-innosilicon"
+version = "0.8.9"
+dependencies = [
+ "asic-rs-core",
+ "serde",
  "strum",
  "ts-rs",
 ]

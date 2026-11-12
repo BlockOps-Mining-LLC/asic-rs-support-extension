@@ -417,6 +417,7 @@ impl GetApiVersion for IceRiverV1 {}
 impl GetControlBoardVersion for IceRiverV1 {}
 impl GetExpectedHashrate for IceRiverV1 {}
 impl GetPsuFans for IceRiverV1 {}
+impl GetPsus for IceRiverV1 {}
 impl GetFluidTemperature for IceRiverV1 {}
 impl GetWattage for IceRiverV1 {}
 impl GetTuningPercent for IceRiverV1 {}
@@ -447,6 +448,7 @@ impl Restart for IceRiverV1 {
         false
     }
 }
+impl RestartMining for IceRiverV1 {}
 impl Pause for IceRiverV1 {
     fn supports_pause(&self) -> bool {
         false

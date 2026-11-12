@@ -1,3 +1,7 @@
+pub(crate) mod rpc_response;
+pub(crate) mod telemetry;
+#[cfg(test)]
+mod telemetry_tests;
 pub mod v2018;
 pub mod v2020;
 pub mod v2023_07;
