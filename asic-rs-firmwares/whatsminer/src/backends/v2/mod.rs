@@ -463,6 +463,7 @@ impl GetPsuFans for WhatsMinerV2 {
         psu_fans
     }
 }
+impl GetPsus for WhatsMinerV2 {}
 impl GetFluidTemperature for WhatsMinerV2 {
     fn parse_fluid_temperature(&self, data: &HashMap<DataField, Value>) -> Option<Temperature> {
         data.extract_map::<f64, _>(DataField::FluidTemperature, Temperature::from_celsius)
@@ -761,6 +762,7 @@ impl FactoryReset for WhatsMinerV2 {
     }
 }
 
+impl RestartMining for WhatsMinerV2 {}
 impl RestoreStockOs for WhatsMinerV2 {}
 
 #[async_trait]

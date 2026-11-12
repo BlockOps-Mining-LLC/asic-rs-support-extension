@@ -673,7 +673,7 @@ fn solution_units_are_explicit_and_algorithm_specific() {
     for unit in ["Ksol/s", "KSol/s", "KSols/s", "KS/s"] {
         let raw = json!({"rate_5s": 891.28, "rate_unit": unit});
         let rate = hashrate(&raw, HashAlgorithm::Equihash).unwrap();
-        assert_eq!(rate.unit, HashRateUnit::KiloHash);
+        assert_eq!(rate.unit, HashRateUnit::KiloSol);
         assert_eq!(rate.value, 891.28);
         assert!(hashrate(&raw, HashAlgorithm::SHA256).is_none());
         assert!(hashrate(&raw, HashAlgorithm::KHeavyHash).is_none());
@@ -736,7 +736,7 @@ async fn captured_z15_restores_proven_units_partial_chips_and_sensor_channels() 
         let data = miner.parse_data(collector.collect_all().await);
         let rate = data.hashrate.unwrap();
         assert_eq!(rate.algo, HashAlgorithm::Equihash);
-        assert_eq!(rate.unit, HashRateUnit::KiloHash);
+        assert_eq!(rate.unit, HashRateUnit::KiloSol);
         assert!((rate.value - 394.50432).abs() < 1e-8);
         assert!(data.is_mining);
         assert_eq!(data.uptime.unwrap().as_secs(), 844088);
@@ -808,10 +808,7 @@ async fn captured_z15pro_uses_explicit_solution_units_and_physical_slots() {
         );
         for (index, board) in data.hashboards.iter().enumerate() {
             assert_eq!(board.working_chips, Some(6));
-            assert_eq!(
-                board.hashrate.as_ref().unwrap().unit,
-                HashRateUnit::KiloHash
-            );
+            assert_eq!(board.hashrate.as_ref().unwrap().unit, HashRateUnit::KiloSol);
             assert_eq!(
                 board.hashrate.as_ref().unwrap().value,
                 [285.88, 290.54, 286.31][index]

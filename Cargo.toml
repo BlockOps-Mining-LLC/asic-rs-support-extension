@@ -9,7 +9,7 @@ keywords.workspace = true
 description = "Simple ASIC management in Rust"
 
 [workspace.package]
-version = "0.8.6+support.b"
+version = "0.8.9"
 edition = "2024"
 license = "Apache-2.0"
 documentation = "https://256foundation.github.io/asic-rs"
@@ -34,6 +34,7 @@ members = [
     "asic-rs-makes/auradine",
     "asic-rs-makes/avalon",
     "asic-rs-makes/bitaxe",
+    "asic-rs-makes/forgeaxe",
     "asic-rs-makes/braiins",
     "asic-rs-makes/elphapex",
     "asic-rs-makes/epic",
@@ -53,6 +54,7 @@ members = [
     "asic-rs-firmwares/auradine",
     "asic-rs-firmwares/avalonminer",
     "asic-rs-firmwares/bitaxe",
+    "asic-rs-firmwares/forgeaxe",
     "asic-rs-firmwares/braiins",
     "asic-rs-firmwares/elphapex",
     "asic-rs-firmwares/epic",
@@ -79,6 +81,7 @@ default-members = [
     "asic-rs-makes/auradine",
     "asic-rs-makes/avalon",
     "asic-rs-makes/bitaxe",
+    "asic-rs-makes/forgeaxe",
     "asic-rs-makes/braiins",
     "asic-rs-makes/elphapex",
     "asic-rs-makes/epic",
@@ -98,6 +101,7 @@ default-members = [
     "asic-rs-firmwares/auradine",
     "asic-rs-firmwares/avalonminer",
     "asic-rs-firmwares/bitaxe",
+    "asic-rs-firmwares/forgeaxe",
     "asic-rs-firmwares/braiins",
     "asic-rs-firmwares/elphapex",
     "asic-rs-firmwares/epic",
@@ -114,56 +118,58 @@ default-members = [
 ]
 
 [workspace.dependencies]
-asic-rs-core = { path = "asic-rs-core", version = "0.8.6" }
-asic-rs-macros = { path = "asic-rs-macros", version = "0.8.6" }
-asic-rs-pydantic = { path = "asic-rs-pydantic", version = "0.8.6" }
-asic-rs-pydantic-macros = { path = "asic-rs-pydantic-macros", version = "0.8.6" }
+asic-rs-core = { path = "asic-rs-core", version = "0.8.9" }
+asic-rs-macros = { path = "asic-rs-macros", version = "0.8.9" }
+asic-rs-pydantic = { path = "asic-rs-pydantic", version = "0.8.9" }
+asic-rs-pydantic-macros = { path = "asic-rs-pydantic-macros", version = "0.8.9" }
 
-asic-rs-makes-antminer = { path = "asic-rs-makes/antminer", version = "0.8.6" }
-asic-rs-makes-iceriver = { path = "asic-rs-makes/iceriver", version = "0.8.6" }
-asic-rs-makes-innosilicon = { path = "asic-rs-makes/innosilicon", version = "0.8.6" }
-asic-rs-makes-goldshell = { path = "asic-rs-makes/goldshell", version = "0.8.6" }
-asic-rs-makes-auradine = { path = "asic-rs-makes/auradine", version = "0.8.6" }
-asic-rs-makes-avalon = { path = "asic-rs-makes/avalon", version = "0.8.6" }
-asic-rs-makes-bitaxe = { path = "asic-rs-makes/bitaxe", version = "0.8.6" }
-asic-rs-makes-braiins = { path = "asic-rs-makes/braiins", version = "0.8.6" }
-asic-rs-makes-elphapex = { path = "asic-rs-makes/elphapex", version = "0.8.6" }
-asic-rs-makes-epic = { path = "asic-rs-makes/epic", version = "0.8.6" }
-asic-rs-makes-futurebit = { path = "asic-rs-makes/futurebit", version = "0.8.6" }
-asic-rs-makes-nerdaxe = { path = "asic-rs-makes/nerdaxe", version = "0.8.6" }
-asic-rs-makes-proto = { path = "asic-rs-makes/proto", version = "0.8.6" }
-asic-rs-makes-sealminer = { path = "asic-rs-makes/sealminer", version = "0.8.6" }
-asic-rs-makes-volcminer = { path = "asic-rs-makes/volcminer", version = "0.8.6" }
-asic-rs-makes-whatsminer = { path = "asic-rs-makes/whatsminer", version = "0.8.6" }
-asic-rs-makes-marathon = { path = "asic-rs-makes/marathon", version = "0.8.6" }
+asic-rs-makes-antminer = { path = "asic-rs-makes/antminer", version = "0.8.9" }
+asic-rs-makes-iceriver = { path = "asic-rs-makes/iceriver", version = "0.8.9" }
+asic-rs-makes-innosilicon = { path = "asic-rs-makes/innosilicon", version = "0.8.9" }
+asic-rs-makes-auradine = { path = "asic-rs-makes/auradine", version = "0.8.9" }
+asic-rs-makes-avalon = { path = "asic-rs-makes/avalon", version = "0.8.9" }
+asic-rs-makes-bitaxe = { path = "asic-rs-makes/bitaxe", version = "0.8.9" }
+asic-rs-makes-forgeaxe = { path = "asic-rs-makes/forgeaxe", version = "0.8.9" }
+asic-rs-makes-braiins = { path = "asic-rs-makes/braiins", version = "0.8.9" }
+asic-rs-makes-elphapex = { path = "asic-rs-makes/elphapex", version = "0.8.9" }
+asic-rs-makes-epic = { path = "asic-rs-makes/epic", version = "0.8.9" }
+asic-rs-makes-futurebit = { path = "asic-rs-makes/futurebit", version = "0.8.9" }
+asic-rs-makes-goldshell = { path = "asic-rs-makes/goldshell", version = "0.8.9" }
+asic-rs-makes-nerdaxe = { path = "asic-rs-makes/nerdaxe", version = "0.8.9" }
+asic-rs-makes-proto = { path = "asic-rs-makes/proto", version = "0.8.9" }
+asic-rs-makes-sealminer = { path = "asic-rs-makes/sealminer", version = "0.8.9" }
+asic-rs-makes-volcminer = { path = "asic-rs-makes/volcminer", version = "0.8.9" }
+asic-rs-makes-whatsminer = { path = "asic-rs-makes/whatsminer", version = "0.8.9" }
+asic-rs-makes-marathon = { path = "asic-rs-makes/marathon", version = "0.8.9" }
 
-asic-rs-firmwares-antminer = { path = "asic-rs-firmwares/antminer", version = "0.8.6" }
-asic-rs-firmwares-iceriver = { path = "asic-rs-firmwares/iceriver", version = "0.8.6" }
-asic-rs-firmwares-kaonsu = { path = "asic-rs-firmwares/kaonsu", version = "0.8.6" }
-asic-rs-firmwares-innosilicon = { path = "asic-rs-firmwares/innosilicon", version = "0.8.6" }
-asic-rs-firmwares-goldshell = { path = "asic-rs-firmwares/goldshell", version = "0.8.6" }
-asic-rs-firmwares-futurebit = { path = "asic-rs-firmwares/futurebit", version = "0.8.6" }
-asic-rs-firmwares-auradine = { path = "asic-rs-firmwares/auradine", version = "0.8.6" }
-asic-rs-firmwares-avalonminer = { path = "asic-rs-firmwares/avalonminer", version = "0.8.6" }
-asic-rs-firmwares-bitaxe = { path = "asic-rs-firmwares/bitaxe", version = "0.8.6" }
-asic-rs-firmwares-braiins = { path = "asic-rs-firmwares/braiins", version = "0.8.6" }
-asic-rs-firmwares-elphapex = { path = "asic-rs-firmwares/elphapex", version = "0.8.6" }
-asic-rs-firmwares-epic = { path = "asic-rs-firmwares/epic", version = "0.8.6" }
-asic-rs-firmwares-luxminer = { path = "asic-rs-firmwares/luxminer", version = "0.8.6" }
-asic-rs-firmwares-marathon = { path = "asic-rs-firmwares/marathon", version = "0.8.6" }
-asic-rs-firmwares-nerdaxe = { path = "asic-rs-firmwares/nerdaxe", version = "0.8.6" }
-asic-rs-firmwares-proto = { path = "asic-rs-firmwares/proto", version = "0.8.6" }
-asic-rs-firmwares-sealminer = { path = "asic-rs-firmwares/sealminer", version = "0.8.6" }
-asic-rs-firmwares-vnish = { path = "asic-rs-firmwares/vnish", version = "0.8.6" }
-asic-rs-firmwares-volcminer = { path = "asic-rs-firmwares/volcminer", version = "0.8.6" }
-asic-rs-firmwares-whatsminer = { path = "asic-rs-firmwares/whatsminer", version = "0.8.6" }
+asic-rs-firmwares-antminer = { path = "asic-rs-firmwares/antminer", version = "0.8.9" }
+asic-rs-firmwares-iceriver = { path = "asic-rs-firmwares/iceriver", version = "0.8.9" }
+asic-rs-firmwares-kaonsu = { path = "asic-rs-firmwares/kaonsu", version = "0.8.9" }
+asic-rs-firmwares-innosilicon = { path = "asic-rs-firmwares/innosilicon", version = "0.8.9" }
+asic-rs-firmwares-futurebit = { path = "asic-rs-firmwares/futurebit", version = "0.8.9" }
+asic-rs-firmwares-goldshell = { path = "asic-rs-firmwares/goldshell", version = "0.8.9" }
+asic-rs-firmwares-auradine = { path = "asic-rs-firmwares/auradine", version = "0.8.9" }
+asic-rs-firmwares-avalonminer = { path = "asic-rs-firmwares/avalonminer", version = "0.8.9" }
+asic-rs-firmwares-bitaxe = { path = "asic-rs-firmwares/bitaxe", version = "0.8.9" }
+asic-rs-firmwares-forgeaxe = { path = "asic-rs-firmwares/forgeaxe", version = "0.8.9" }
+asic-rs-firmwares-braiins = { path = "asic-rs-firmwares/braiins", version = "0.8.9" }
+asic-rs-firmwares-elphapex = { path = "asic-rs-firmwares/elphapex", version = "0.8.9" }
+asic-rs-firmwares-epic = { path = "asic-rs-firmwares/epic", version = "0.8.9" }
+asic-rs-firmwares-luxminer = { path = "asic-rs-firmwares/luxminer", version = "0.8.9" }
+asic-rs-firmwares-marathon = { path = "asic-rs-firmwares/marathon", version = "0.8.9" }
+asic-rs-firmwares-nerdaxe = { path = "asic-rs-firmwares/nerdaxe", version = "0.8.9" }
+asic-rs-firmwares-proto = { path = "asic-rs-firmwares/proto", version = "0.8.9" }
+asic-rs-firmwares-sealminer = { path = "asic-rs-firmwares/sealminer", version = "0.8.9" }
+asic-rs-firmwares-vnish = { path = "asic-rs-firmwares/vnish", version = "0.8.9" }
+asic-rs-firmwares-volcminer = { path = "asic-rs-firmwares/volcminer", version = "0.8.9" }
+asic-rs-firmwares-whatsminer = { path = "asic-rs-firmwares/whatsminer", version = "0.8.9" }
 
 diqwest = "3.2"
 digest_auth = "0.3.1"
 futures = "0.3"
 macaddr = { version = "1.0", features = ["serde_std"] }
 measurements = { version = "0.11", features = ["serde"] }
-reqwest = { version = "0.13.3", features = ["json", "query", "form", "gzip", "rustls", "multipart", "stream"], default-features = false }
+reqwest = { version = "0.13.3", features = ["json", "gzip", "rustls", "multipart", "stream", "form"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ts-rs = { version = "12.0.1", features = ["no-serde-warnings"] }
@@ -224,6 +230,7 @@ default = [
     "auradine",
     "avalonminer",
     "bitaxe",
+    "forgeaxe",
     "braiins",
     "elphapex",
     "epic",
@@ -247,6 +254,7 @@ futurebit = ["dep:asic-rs-firmwares-futurebit"]
 auradine = ["dep:asic-rs-firmwares-auradine"]
 avalonminer = ["dep:asic-rs-firmwares-avalonminer"]
 bitaxe = ["dep:asic-rs-firmwares-bitaxe"]
+forgeaxe = ["dep:asic-rs-firmwares-forgeaxe"]
 braiins = ["dep:asic-rs-firmwares-braiins"]
 elphapex = ["dep:asic-rs-firmwares-elphapex"]
 epic = ["dep:asic-rs-firmwares-epic"]
@@ -268,6 +276,7 @@ python = [
     "asic-rs-makes-auradine/python",
     "asic-rs-makes-avalon/python",
     "asic-rs-makes-bitaxe/python",
+    "asic-rs-makes-forgeaxe/python",
     "asic-rs-makes-braiins/python",
     "asic-rs-makes-elphapex/python",
     "asic-rs-makes-epic/python",
@@ -287,6 +296,7 @@ python = [
     "asic-rs-firmwares-auradine?/python",
     "asic-rs-firmwares-avalonminer?/python",
     "asic-rs-firmwares-bitaxe?/python",
+    "asic-rs-firmwares-forgeaxe?/python",
     "asic-rs-firmwares-braiins?/python",
     "asic-rs-firmwares-elphapex?/python",
     "asic-rs-firmwares-epic?/python",
@@ -310,6 +320,7 @@ asic-rs-makes-goldshell.workspace = true
 asic-rs-makes-auradine.workspace = true
 asic-rs-makes-avalon.workspace = true
 asic-rs-makes-bitaxe.workspace = true
+asic-rs-makes-forgeaxe.workspace = true
 asic-rs-makes-braiins.workspace = true
 asic-rs-makes-elphapex.workspace = true
 asic-rs-makes-epic.workspace = true
@@ -330,6 +341,7 @@ asic-rs-firmwares-futurebit = { workspace = true, optional = true }
 asic-rs-firmwares-auradine = { workspace = true, optional = true }
 asic-rs-firmwares-avalonminer = { workspace = true, optional = true }
 asic-rs-firmwares-bitaxe = { workspace = true, optional = true }
+asic-rs-firmwares-forgeaxe = { workspace = true, optional = true }
 asic-rs-firmwares-braiins = { workspace = true, optional = true }
 asic-rs-firmwares-elphapex = { workspace = true, optional = true }
 asic-rs-firmwares-epic = { workspace = true, optional = true }

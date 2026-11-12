@@ -324,6 +324,12 @@ char *asic_rs_miner_get_fans_json(const struct AsicMiner *miner);
 // `miner` must be a live handle.
 char *asic_rs_miner_get_psu_fans_json(const struct AsicMiner *miner);
 
+// PSU telemetry as JSON (`null` when the firmware does not report it).
+//
+// # Safety
+// `miner` must be a live handle.
+char *asic_rs_miner_get_psus_json(const struct AsicMiner *miner);
+
 // Fluid/ambient temperature in °C as JSON.
 //
 // # Safety
@@ -529,6 +535,12 @@ int32_t asic_rs_miner_set_tuning_percent(const struct AsicMiner *miner, uint8_t 
 // # Safety
 // `miner` must be a live handle.
 int32_t asic_rs_miner_restart(const struct AsicMiner *miner);
+
+// Restart the mining program without rebooting the miner. Returns 1/0/-1.
+//
+// # Safety
+// `miner` must be a live handle.
+int32_t asic_rs_miner_restart_mining(const struct AsicMiner *miner);
 
 // Pause mining. `at_time_secs` < 0 means immediately. Returns 1/0/-1.
 //

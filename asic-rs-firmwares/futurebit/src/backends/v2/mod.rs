@@ -617,6 +617,7 @@ impl GetFans for ApolloV2 {
 }
 
 impl GetPsuFans for ApolloV2 {}
+impl GetPsus for ApolloV2 {}
 impl SupportsTimezoneConfig for ApolloV2 {}
 
 impl GetFluidTemperature for ApolloV2 {}
@@ -810,6 +811,7 @@ impl FactoryReset for ApolloV2 {
     }
 }
 
+impl RestartMining for ApolloV2 {}
 impl RestoreStockOs for ApolloV2 {}
 
 #[async_trait]

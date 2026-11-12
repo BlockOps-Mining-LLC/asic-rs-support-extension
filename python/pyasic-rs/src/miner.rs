@@ -18,6 +18,7 @@ use asic_rs_core::{
         miner::{CheckedMinerData, MinerData, TuningTarget},
         operating_state::OperatingState,
         pool::PoolGroupData,
+        psu::PsuData,
     },
     traits::{auth::MinerAuth, miner::Miner as MinerTrait},
 };
@@ -199,6 +200,11 @@ impl Miner {
     #[getter]
     fn supports_restart(&self, py: Python<'_>) -> bool {
         self.with_miner(py, |miner| miner.supports_restart())
+    }
+    /// Whether this miner can restart its mining program without rebooting.
+    #[getter]
+    fn supports_restart_mining(&self, py: Python<'_>) -> bool {
+        self.with_miner(py, |miner| miner.supports_restart_mining())
     }
     /// Whether this miner supports pause commands.
     #[getter]
@@ -463,6 +469,14 @@ impl Miner {
             Ok(inner.get_psu_fans().await)
         })
     }
+    /// Await power-supply telemetry, or `None` if the firmware does not report it.
+    pub fn get_psus<'a>(&self, py: Python<'a>) -> PyResult<PyAwaitable<Option<Vec<PsuData>>>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let inner = inner.read().await;
+            Ok(inner.get_psus().await)
+        })
+    }
     /// Await fluid or ambient temperature in Celsius, if available.
     pub fn get_fluid_temperature<'a>(&self, py: Python<'a>) -> PyResult<PyAwaitable<Option<f64>>> {
         let inner = Arc::clone(&self.inner);
@@ -665,6 +679,18 @@ impl Miner {
             let inner = inner.read().await;
             inner
                 .restart()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+    /// Restart the mining program without rebooting the miner.
+    ///
+    pub fn restart_mining<'a>(&self, py: Python<'a>) -> PyResult<PyAwaitable<bool>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let inner = inner.read().await;
+            inner
+                .restart_mining()
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })

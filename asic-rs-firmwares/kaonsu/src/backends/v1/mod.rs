@@ -288,6 +288,7 @@ impl GetControlBoardVersion for KaonsuMiner {
 impl GetSerialNumber for KaonsuMiner {}
 impl GetFluidTemperature for KaonsuMiner {}
 impl GetPsuFans for KaonsuMiner {}
+impl GetPsus for KaonsuMiner {}
 impl GetLightFlashing for KaonsuMiner {}
 impl GetTuningCapabilities for KaonsuMiner {}
 impl GetTuningPercent for KaonsuMiner {}
@@ -315,6 +316,7 @@ macro_rules! unsupported_control {
 unsupported_control!(SetFaultLight, supports_set_fault_light);
 unsupported_control!(SetPowerLimit, supports_set_power_limit);
 unsupported_control!(Restart, supports_restart);
+impl RestartMining for KaonsuMiner {}
 unsupported_control!(Pause, supports_pause);
 unsupported_control!(Resume, supports_resume);
 unsupported_control!(ChangePassword, supports_change_password);

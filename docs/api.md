@@ -129,12 +129,21 @@ Common telemetry methods:
 | Hashboards | `get_hashboards` |
 | Hashrate | `get_hashrate` |
 | Fans | `get_fans` |
+| Power supplies | `get_psus` |
 | Wattage | `get_wattage` |
 | Best share difficulty | `get_best_share` |
 | Session best share difficulty | `get_session_best_share` |
 | Messages | `get_messages` |
 | Pools | `get_pools` |
 | Mining state | `get_is_mining` |
+
+`MinerData.psus` is `Option<Vec<PsuData>>`: `None` when the firmware does not
+report PSU details, otherwise one entry per PSU with model, serial number,
+firmware version, input/output voltage (V), output current (A), input/output
+power (W), efficiency (0–1), and temperature (°C). Custom Rust backends
+implement `GetPsus`; an empty implementation reports `None`. SealMiner Stock
+reads these from RPC `stats` (`PSU Input Voltage`, `PSU Output Current`, …) and
+also reports its non-zero `PSU Error` bitmask as a `PowerSupply` message.
 
 ## Controls And Capability Checks
 
@@ -145,6 +154,7 @@ Python exposes matching `supports_*` properties; Go returns them from
 | Capability | Control |
 | --- | --- |
 | `supports_restart` | `restart()` |
+| `supports_restart_mining` | `restart_mining()` |
 | `supports_pause` | `pause()` |
 | `supports_resume` | `resume()` |
 | `supports_set_fault_light` | `set_fault_light(...)` |
@@ -155,6 +165,7 @@ Python exposes matching `supports_*` properties; Go returns them from
 | `supports_restore_stock_os` | `restore_stock_os()` |
 | `supports_prepare_firmware` | `prepare_firmware(...)` |
 | `supports_upgrade_firmware` | `upgrade_firmware(...)` |
+| `supports_check_firmware_update` | `check_firmware_update()` |
 
 All miner handles also expose `revalidate()`, which re-runs that backend's
 firmware discovery checks against the same IP and returns whether the device is
@@ -164,6 +175,30 @@ still valid for the existing miner handle.
 and may query miner metadata to select a compatible payload, but it never starts
 an upload. The returned `FirmwareImage` contains the filename and bytes that an
 upgrade would use.
+
+`check_firmware_update()` is an on-demand, read-only check returning installed
+and latest versions and, when resolved, a firmware download source. Braiins
+v26.04 queries the miner's update service. ePIC queries GitHub's latest release
+API, using `epicblockchain/powerplay-antminer` for STM32 UMC boards and
+`epicblockchain/umcos-antminer` for recognized stock control boards. Unknown
+ePIC board identities and legacy VolcMiner Xilinx boards return an error.
+ePIC currently reports versions only;
+the download source is absent because board/model asset selection is not yet
+implemented. GitHub checks require internet access and are subject to its public
+API rate limits. An unknown installed version makes `update_available()` return
+`false`, even if the latest version is known.
+ePIC shares concurrent GitHub lookups per repository and caches valid release
+metadata for five minutes. Failed lookups are cached for one minute before a
+retry, avoiding repeated requests during outages or rate limiting. Installed
+versions are always read from each miner and are never shared through this cache.
+
+For any backend with `supports_check_firmware_update() == true`, use the
+returned `FirmwareStats::update_available()` to compare versions:
+
+```rust
+let stats = miner.check_firmware_update().await?;
+let update_available = stats.update_available();
+```
 
 `factory_reset()` restores the miner's settings to their factory defaults; it
 does not replace the installed operating system. `restore_stock_os()` is a

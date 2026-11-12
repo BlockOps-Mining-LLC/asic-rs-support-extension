@@ -29,6 +29,7 @@ const (
 	DataFieldExpectedHashrate       DataField = "ExpectedHashrate"
 	DataFieldFans                   DataField = "Fans"
 	DataFieldPSUFans                DataField = "PsuFans"
+	DataFieldPSUs                   DataField = "Psus"
 	DataFieldAverageTemperature     DataField = "AverageTemperature"
 	DataFieldFluidTemperature       DataField = "FluidTemperature"
 	DataFieldOutletFluidTemperature DataField = "OutletFluidTemperature"
@@ -55,7 +56,7 @@ type HashRate struct {
 	Algo  HashAlgorithm `json:"algo"`
 }
 
-// HashRateUnit is the scale of a HashRate.Value.
+// HashRateUnit is the quantity and scale of a HashRate.Value.
 type HashRateUnit string
 
 const (
@@ -68,6 +69,8 @@ const (
 	HashRateUnitExaHash   HashRateUnit = "ExaHash"
 	HashRateUnitZettaHash HashRateUnit = "ZettaHash"
 	HashRateUnitYottaHash HashRateUnit = "YottaHash"
+	HashRateUnitSol       HashRateUnit = "Sol"
+	HashRateUnitKiloSol   HashRateUnit = "KiloSol"
 )
 
 // ParseHashRateUnit accepts Rust variant names and the unit aliases accepted by Rust/Python.
@@ -82,6 +85,12 @@ func ParseHashRateUnit(value string) (HashRateUnit, error) {
 		if normalized == strings.ToUpper(string(name)) || normalized == short || normalized == short+"S" || normalized == short+"/S" {
 			return name, nil
 		}
+	}
+	switch normalized {
+	case "SOL", "SOLS", "SOL/S":
+		return HashRateUnitSol, nil
+	case "KILOSOL", "KILOSOLS", "KILOSOL/S", "KSOL", "KSOLS", "KSOL/S":
+		return HashRateUnitKiloSol, nil
 	}
 	return "", fmt.Errorf("unknown hash rate unit: %q", value)
 }
@@ -109,16 +118,16 @@ func (u HashRateUnit) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(unit))
 }
 
-// Multiplier returns the factor to convert this unit to H/s, rejecting invalid units.
+// Multiplier returns the factor to convert this unit to base counts/s, rejecting invalid units.
 func (u HashRateUnit) Multiplier() (float64, error) {
 	unit, err := ParseHashRateUnit(string(u))
 	if err != nil {
 		return 0, err
 	}
 	switch unit {
-	case HashRateUnitHash:
+	case HashRateUnitHash, HashRateUnitSol:
 		return 1, nil
-	case HashRateUnitKiloHash:
+	case HashRateUnitKiloHash, HashRateUnitKiloSol:
 		return 1e3, nil
 	case HashRateUnitMegaHash:
 		return 1e6, nil
@@ -245,6 +254,22 @@ type BoardData struct {
 type FanData struct {
 	Position int16    `json:"position"`
 	RPM      *float64 `json:"rpm"`
+}
+
+// PSUData is power supply telemetry. Units: volts, amperes, watts, °C;
+// efficiency is output/input power as a 0–1 ratio.
+type PSUData struct {
+	Position        uint16   `json:"position"`
+	Model           *string  `json:"model"`
+	SerialNumber    *string  `json:"serial_number"`
+	FirmwareVersion *string  `json:"firmware_version"`
+	InputVoltage    *float64 `json:"input_voltage"`
+	OutputVoltage   *float64 `json:"output_voltage"`
+	OutputCurrent   *float64 `json:"output_current"`
+	InputPower      *float64 `json:"input_power"`
+	OutputPower     *float64 `json:"output_power"`
+	Efficiency      *float64 `json:"efficiency"`
+	Temperature     *float64 `json:"temperature"`
 }
 
 // MessageSeverity is the severity of a miner message.
@@ -624,6 +649,7 @@ type MinerData struct {
 	ExpectedFans           *uint8              `json:"expected_fans"`
 	Fans                   []FanData           `json:"fans"`
 	PSUFans                []FanData           `json:"psu_fans"`
+	PSUs                   []PSUData           `json:"psus"` // nil when the firmware does not report PSUs
 	AverageTemperature     *float64            `json:"average_temperature"`
 	ReportedMaxTemperature *float64            `json:"reported_max_temperature"`
 	FluidTemperature       *float64            `json:"fluid_temperature"`
@@ -770,24 +796,25 @@ type Supports struct {
 	SetFaultLight        bool `json:"set_fault_light"`
 	SetPowerLimit        bool `json:"set_power_limit"`
 	SetHashboardsEnabled bool `json:"set_hashboards_enabled"`
-	SetTuningPercent     bool `json:"set_tuning_percent"`
-	Presets              bool `json:"presets"`
-	Restart              bool `json:"restart"`
-	Pause                bool `json:"pause"`
-	Resume               bool `json:"resume"`
-	ChangePassword       bool `json:"change_password"`
-	ReadLogs             bool `json:"read_logs"`
-	FactoryReset         bool `json:"factory_reset"`
-	RestoreStockOS       bool `json:"restore_stock_os"`
-	PoolsConfig          bool `json:"pools_config"`
-	UpgradeFirmware      bool `json:"upgrade_firmware"`
-	PrepareFirmware      bool `json:"prepare_firmware"`
-	CheckFirmwareUpdate  bool `json:"check_firmware_update"`
-	TimezoneConfig       bool `json:"timezone_config"`
-	ScalingConfig        bool `json:"scaling_config"`
-	TemperatureConfig    bool `json:"temperature_config"`
-	TuningConfig         bool `json:"tuning_config"`
-	FanConfig            bool `json:"fan_config"`
+	SetTuningPercent    bool `json:"set_tuning_percent"`
+	Presets             bool `json:"presets"`
+	Restart             bool `json:"restart"`
+	RestartMining       bool `json:"restart_mining"`
+	Pause               bool `json:"pause"`
+	Resume              bool `json:"resume"`
+	ChangePassword      bool `json:"change_password"`
+	ReadLogs            bool `json:"read_logs"`
+	FactoryReset        bool `json:"factory_reset"`
+	RestoreStockOS      bool `json:"restore_stock_os"`
+	PoolsConfig         bool `json:"pools_config"`
+	UpgradeFirmware     bool `json:"upgrade_firmware"`
+	PrepareFirmware     bool `json:"prepare_firmware"`
+	CheckFirmwareUpdate bool `json:"check_firmware_update"`
+	TimezoneConfig      bool `json:"timezone_config"`
+	ScalingConfig       bool `json:"scaling_config"`
+	TemperatureConfig   bool `json:"temperature_config"`
+	TuningConfig        bool `json:"tuning_config"`
+	FanConfig           bool `json:"fan_config"`
 }
 
 // Required Rust collections are sequences, even when a Go slice is nil.

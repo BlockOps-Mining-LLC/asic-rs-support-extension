@@ -33,6 +33,7 @@ use crate::{
         miner::{CheckedMinerData, MinerData, NoTelemetryError, TuningTarget},
         operating_state::OperatingState,
         pool::PoolGroupData,
+        psu::PsuData,
     },
     traits::firmware::MinerFirmware,
     traits::model::MinerModel,
@@ -97,6 +98,7 @@ pub trait HasMinerControl:
     + SetHashboardsEnabled
     + SetTuningPercent
     + Restart
+    + RestartMining
     + Resume
     + Pause
     + ChangePassword
@@ -111,6 +113,7 @@ impl<
         + SetHashboardsEnabled
         + SetTuningPercent
         + Restart
+        + RestartMining
         + Resume
         + Pause
         + ChangePassword
@@ -181,6 +184,7 @@ pub trait GetMinerData:
     + GetExpectedHashrate
     + GetFans
     + GetPsuFans
+    + GetPsus
     + GetFluidTemperature
     + GetWattage
     + GetTuningPercent
@@ -253,6 +257,7 @@ impl<
         + GetExpectedHashrate
         + GetFans
         + GetPsuFans
+        + GetPsus
         + GetFluidTemperature
         + GetWattage
         + GetTuningPercent
@@ -333,6 +338,7 @@ impl<
         let outlet_fluid_temperature = self.parse_outlet_fluid_temperature(&data);
         let fans = self.parse_fans(&data);
         let psu_fans = self.parse_psu_fans(&data);
+        let psus = self.parse_psus(&data);
         let hashboards = self.parse_hashboards(&data);
         let reported_max_temperature = self.parse_reported_max_temperature(&data);
         let light_flashing = self.parse_light_flashing(&data);
@@ -408,6 +414,7 @@ impl<
             expected_fans: device_info.hardware.fans,
             fans,
             psu_fans,
+            psus,
             average_temperature,
             reported_max_temperature,
             fluid_temperature,
@@ -740,6 +747,21 @@ pub trait GetPsuFans: CollectData {
     #[allow(unused_variables)]
     fn parse_psu_fans(&self, data: &HashMap<DataField, Value>) -> Vec<FanData> {
         vec![]
+    }
+}
+
+// PSUs
+#[async_trait]
+pub trait GetPsus: CollectData {
+    #[tracing::instrument(level = "debug")]
+    async fn get_psus(&self) -> Option<Vec<PsuData>> {
+        let mut collector = self.get_collector();
+        let data = collector.collect(&[DataField::Psus]).await;
+        self.parse_psus(&data)
+    }
+    #[allow(unused_variables)]
+    fn parse_psus(&self, data: &HashMap<DataField, Value>) -> Option<Vec<PsuData>> {
+        None
     }
 }
 
@@ -1076,6 +1098,23 @@ pub trait Restart {
     fn supports_restart(&self) -> bool;
 }
 
+/// Restart the mining program without rebooting the operating system.
+///
+/// This is distinct from [`Restart`], which reboots the whole device. A
+/// successful request only confirms that the firmware accepted the restart;
+/// hashing stops while the mining program comes back up.
+#[async_trait]
+pub trait RestartMining {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        anyhow::bail!("Restarting the mining program is not supported on this platform");
+    }
+    /// Defaults to `false`; backends that can restart the mining program
+    /// without a reboot override this.
+    fn supports_restart_mining(&self) -> bool {
+        false
+    }
+}
+
 #[async_trait]
 pub trait Pause {
     #[allow(unused_variables)]
@@ -1175,6 +1214,26 @@ pub trait UpgradeFirmware {
     /// unsupported.
     async fn check_firmware_update(&self) -> anyhow::Result<FirmwareStats> {
         anyhow::bail!("Checking for firmware updates is not supported on this platform");
+    }
+
+    /// Check vendor releases using the supplied client for miner reads.
+    ///
+    /// This lets an explicit read context reuse raw responses without adding
+    /// configuration or update metadata to telemetry. Implementations must use
+    /// this client for miner requests; vendor release-server requests may still
+    /// be made separately. Defaults to unsupported, without a fresh-read fallback.
+    #[allow(unused_variables)]
+    async fn check_firmware_update_with_client(
+        &self,
+        client: &dyn APIClient,
+    ) -> anyhow::Result<FirmwareStats> {
+        anyhow::bail!(
+            "Checking firmware updates through a read client is not supported on this platform"
+        );
+    }
+
+    fn supports_check_firmware_update_with_client(&self) -> bool {
+        false
     }
 
     fn supports_check_firmware_update(&self) -> bool {

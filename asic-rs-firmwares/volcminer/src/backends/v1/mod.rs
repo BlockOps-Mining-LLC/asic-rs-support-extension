@@ -678,6 +678,7 @@ impl GetTuningTarget for VolcMinerV1 {}
 impl GetScaledTuningTarget for VolcMinerV1 {}
 impl GetFluidTemperature for VolcMinerV1 {}
 impl GetPsuFans for VolcMinerV1 {}
+impl GetPsus for VolcMinerV1 {}
 impl GetTuningCapabilities for VolcMinerV1 {}
 impl GetMessages for VolcMinerV1 {}
 
@@ -833,6 +834,7 @@ impl FactoryReset for VolcMinerV1 {
     }
 }
 
+impl RestartMining for VolcMinerV1 {}
 impl RestoreStockOs for VolcMinerV1 {}
 
 #[async_trait]

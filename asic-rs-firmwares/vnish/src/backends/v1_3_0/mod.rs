@@ -714,6 +714,7 @@ impl GetFans for VnishV130 {
 }
 
 impl GetPsuFans for VnishV130 {}
+impl GetPsus for VnishV130 {}
 
 impl GetFluidTemperature for VnishV130 {
     fn parse_fluid_temperature(&self, data: &HashMap<DataField, Value>) -> Option<Temperature> {
@@ -1196,6 +1197,18 @@ impl FactoryReset for VnishV130 {
     }
 
     fn supports_factory_reset(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
+impl RestartMining for VnishV130 {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        self.web.restart_mining().await?;
+        Ok(true)
+    }
+
+    fn supports_restart_mining(&self) -> bool {
         true
     }
 }
@@ -1810,6 +1823,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_mining_accepts_bodyless_mining_restart_response() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } = mock_http_server(200, "OK", "").await?;
+        let miner = miner_with_mock_web(port);
+
+        assert!(miner.supports_restart_mining());
+        assert!(miner.restart_mining().await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /api/v1/mining/restart HTTP/1.1\r\n"));
+        assert!(
+            request
+                .lines()
+                .any(|line| { line.eq_ignore_ascii_case("authorization: Bearer test-token") })
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_mining_surfaces_firmware_rejection() -> anyhow::Result<()> {
+        for (status, reason, body) in [
+            (500, "Internal Server Error", r#"{"err":"miner is busy"}"#),
+            (200, "OK", r#"{"success":false,"err":"miner is busy"}"#),
+        ] {
+            let MockHttpServer { port, task } = mock_http_server(status, reason, body).await?;
+            let miner = miner_with_mock_web(port);
+
+            let error = miner.restart_mining().await.unwrap_err();
+
+            task.await??;
+            assert!(error.to_string().contains("miner is busy"));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn restore_stock_os_surfaces_incompatible_model() -> anyhow::Result<()> {
         let MockHttpServer { port, task } =
             mock_http_server(400, "Bad Request", r#"{"error":"unsupported model"}"#).await?;
@@ -1966,5 +2016,96 @@ mod tests {
         assert_eq!(config.available.first(), Some(&Tz::Etc__GMTPlus12));
         assert!(config.available.contains(&Tz::Etc__GMT));
         assert_eq!(config.available.last(), Some(&Tz::Etc__GMTMinus14));
+    }
+
+    #[tokio::test]
+    async fn control_calls_report_why_the_miner_refused() -> anyhow::Result<()> {
+        let refusal = r#"{"err":"miner is not running"}"#;
+
+        let MockHttpServer { port, task } = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(port).pause(None).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("POST /api/v1/mining/stop HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let server = mock_http_sequence(vec![
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+            (400, "Bad Request", refusal),
+        ])
+        .await?;
+        let error = miner_with_mock_web(server.port)
+            .resume(None)
+            .await
+            .unwrap_err();
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("POST /api/v1/mining/start HTTP/1.1\r\n"));
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let MockHttpServer { port, task } = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(port).restart().await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("POST /api/v1/mining/restart HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let MockHttpServer { port, task } = mock_http_server(400, "Bad Request", refusal).await?;
+        let error = miner_with_mock_web(port)
+            .set_pools_config(vec![])
+            .await
+            .unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("POST /api/v1/settings HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accepted_control_calls_still_return_true() -> anyhow::Result<()> {
+        let server = mock_http_sequence(vec![
+            (200, "OK", ""),
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+        ])
+        .await?;
+        assert!(miner_with_mock_web(server.port).pause(None).await?);
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("POST /api/v1/mining/stop HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
+
+        let server = mock_http_sequence(vec![
+            (200, "OK", r#"{"miner_state":"stopped"}"#),
+            (200, "OK", r#"{"success":true}"#),
+        ])
+        .await?;
+        assert!(miner_with_mock_web(server.port).resume(None).await?);
+        let requests = server.task.await??;
+        assert!(requests[0].starts_with("GET /api/v1/status HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("POST /api/v1/mining/start HTTP/1.1\r\n"));
+
+        let MockHttpServer { port, task } =
+            mock_http_server(200, "OK", r#"{"success":true}"#).await?;
+        assert!(miner_with_mock_web(port).restart().await?);
+        task.await??;
+
+        Ok(())
+    }
+
+    #[test]
+    fn http_error_without_a_body_reads_as_before() {
+        let error = web::VnishError::HttpError {
+            status: 500,
+            body: " ".to_string(),
+        };
+        assert_eq!(error.to_string(), "HTTP error: 500");
     }
 }

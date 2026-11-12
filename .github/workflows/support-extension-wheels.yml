@@ -45,10 +45,9 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           maturin-version: v1.15.0
-          working-directory: python/pyasic-rs
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --features python,abi3 -i ${{ matrix.interpreter }} --out ../../dist
+          args: --manifest-path python/pyasic-rs/Cargo.toml --release --locked --features python,abi3 -i ${{ matrix.interpreter }} --out dist
           sccache: true
       - name: Test native wheel
         if: matrix.platform != 'linux-armv7l'
@@ -119,7 +118,7 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib, json, os, pathlib, re, tomllib, zipfile
-          project = tomllib.loads(pathlib.Path('python/pyasic-rs/pyproject.toml').read_text())['project']
+          project = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']
           name, version = project['name'].replace('_', '-'), project['version']
           assert name == 'pyasic-rs-support-extension'
           match = re.fullmatch(r'(\d+\.\d+\.\d+)\.post([1-9]\d*)', version)

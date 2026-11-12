@@ -655,6 +655,7 @@ impl GetFans for BraiinsV2505 {
 }
 
 impl GetPsuFans for BraiinsV2505 {}
+impl GetPsus for BraiinsV2505 {}
 
 impl GetFluidTemperature for BraiinsV2505 {}
 
@@ -975,6 +976,17 @@ impl FactoryReset for BraiinsV2505 {
     }
 
     fn supports_factory_reset(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
+impl RestartMining for BraiinsV2505 {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        self.graphql.restart_bosminer().await
+    }
+
+    fn supports_restart_mining(&self) -> bool {
         true
     }
 }

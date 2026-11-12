@@ -375,12 +375,9 @@ impl MinerFactory {
         }))
     }
 
-    /// Set credentials used when constructing a matching discovered firmware.
+    /// Set credentials used to construct a matching discovered firmware.
     ///
-    /// `firmware_name` must be an exact registered Display name, for example
-    /// `AntMiner Stock`, `Hiveon`, `KaonSu`, `VNish`, or `IceRiver Stock`.
-    /// Unknown names raise `ValueError` without exposing credentials or input.
-    /// Firmware identification requests remain unauthenticated.
+    /// Use its registered Display name, such as `AntMiner Stock` or `Braiins`.
     pub fn with_firmware_discovery_auth<'py>(
         slf: PyRefMut<'py, Self>,
         firmware_name: &str,

@@ -390,6 +390,7 @@ impl GetHostname for InnosiliconV1 {}
 impl GetControlBoardVersion for InnosiliconV1 {}
 impl GetExpectedHashrate for InnosiliconV1 {}
 impl GetPsuFans for InnosiliconV1 {}
+impl GetPsus for InnosiliconV1 {}
 impl GetFluidTemperature for InnosiliconV1 {}
 impl GetTuningPercent for InnosiliconV1 {}
 impl GetTuningTarget for InnosiliconV1 {}
@@ -415,6 +416,7 @@ impl Restart for InnosiliconV1 {
         false
     }
 }
+impl RestartMining for InnosiliconV1 {}
 impl Pause for InnosiliconV1 {
     fn supports_pause(&self) -> bool {
         false

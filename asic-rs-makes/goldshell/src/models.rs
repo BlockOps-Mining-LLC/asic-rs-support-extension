@@ -1,28 +1,22 @@
-//! Supported Goldshell model identities.
-//! Firmware version or vendor identity alone never establishes an algorithm.
 use std::str::FromStr;
 
 use asic_rs_core::{
-    data::device::HashAlgorithm,
-    errors::ModelSelectionError,
-    traits::model::{MinerModel, MinerModelAlgorithm},
+    data::device::HashAlgorithm, errors::ModelSelectionError, traits::model::MinerModel,
 };
+use asic_rs_macros::ModelAlgorithm;
 use serde::{Deserialize, Serialize};
 use strum::Display;
 use ts_rs::TS;
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize, Display, TS)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize, Display, ModelAlgorithm, TS,
+)]
 pub enum GoldshellModel {
-    CK5,
-    HS5,
-    KD5,
-    KDMax,
-    KDBoxII,
-    KDBoxPro,
-    MiniDoge,
-    Byte,
+    #[serde(alias = "SC5PRO")]
+    #[algorithm(HashAlgorithm::Blake2b)]
     SC5Pro,
     #[strum(to_string = "{0}")]
+    #[algorithm(HashAlgorithm::Unknown)]
     Unknown(String),
 }
 
@@ -36,32 +30,8 @@ impl FromStr for GoldshellModel {
         }
         let normalized = raw.to_ascii_uppercase().replace([' ', '-', '_'], "");
         let name = normalized.strip_prefix("GOLDSHELL").unwrap_or(&normalized);
-        Ok(match name {
-            "CK5" => Self::CK5,
-            "HS5" => Self::HS5,
-            "KD5" => Self::KD5,
-            "KDMAX" => Self::KDMax,
-            "KDBOXII" => Self::KDBoxII,
-            "KDBOXPRO" => Self::KDBoxPro,
-            "MINIDOGE" => Self::MiniDoge,
-            "BYTE" => Self::Byte,
-            "SC5PRO" => Self::SC5Pro,
-            _ => Self::Unknown(raw.to_string()),
-        })
-    }
-}
-
-impl MinerModelAlgorithm for GoldshellModel {
-    fn hash_algorithm(&self) -> HashAlgorithm {
-        match self {
-            Self::CK5 => HashAlgorithm::Eaglesong,
-            Self::HS5 => HashAlgorithm::Handshake,
-            Self::KD5 | Self::KDMax | Self::KDBoxII | Self::KDBoxPro => HashAlgorithm::Kadena,
-            Self::MiniDoge => HashAlgorithm::Scrypt,
-            Self::SC5Pro => HashAlgorithm::Blake2b,
-            // Byte is a multi-device family rather than one algorithm.
-            Self::Byte | Self::Unknown(_) => HashAlgorithm::Unknown,
-        }
+        serde_json::from_value(serde_json::Value::String(name.to_string()))
+            .or_else(|_| Ok(Self::Unknown(raw.to_string())))
     }
 }
 
@@ -77,41 +47,19 @@ impl MinerModel for GoldshellModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asic_rs_core::traits::model::MinerModelAlgorithm;
 
     #[test]
-    fn retained_model_identities_keep_algorithms_without_expected_hardware() {
-        for (name, expected, algorithm) in [
-            (
-                "Goldshell-CK5",
-                GoldshellModel::CK5,
-                HashAlgorithm::Eaglesong,
-            ),
-            ("HS5", GoldshellModel::HS5, HashAlgorithm::Handshake),
-            ("KD5", GoldshellModel::KD5, HashAlgorithm::Kadena),
-            ("KD-Max", GoldshellModel::KDMax, HashAlgorithm::Kadena),
-            ("KD Box II", GoldshellModel::KDBoxII, HashAlgorithm::Kadena),
-            ("KDBoxPro", GoldshellModel::KDBoxPro, HashAlgorithm::Kadena),
-            ("Mini-Doge", GoldshellModel::MiniDoge, HashAlgorithm::Scrypt),
-            ("Byte", GoldshellModel::Byte, HashAlgorithm::Unknown),
-            ("SC5Pro", GoldshellModel::SC5Pro, HashAlgorithm::Blake2b),
-        ] {
+    fn known_model_parses_and_unknown_models_keep_their_identity() {
+        for name in ["SC5Pro", "SC5 PRO", "Goldshell-SC5Pro"] {
             let model = GoldshellModel::from_str(name).unwrap();
-            assert_eq!(model, expected);
-            assert_eq!(model.hash_algorithm(), algorithm);
-            assert_eq!(
-                asic_rs_core::data::device::MinerHardware::from(model),
-                asic_rs_core::data::device::MinerHardware::default()
-            );
+            assert_eq!(model, GoldshellModel::SC5Pro);
+            assert_eq!(model.hash_algorithm(), HashAlgorithm::Blake2b);
         }
-    }
-
-    #[test]
-    fn unverified_sc5_variants_and_ari31_keep_unknown_algorithms() {
         for name in ["SC5", "SC5ProX", "Goldshell-ARI31", "Goldshell"] {
-            assert_eq!(
-                GoldshellModel::from_str(name).unwrap().hash_algorithm(),
-                HashAlgorithm::Unknown
-            );
+            let model = GoldshellModel::from_str(name).unwrap();
+            assert_eq!(model, GoldshellModel::Unknown(name.to_string()));
+            assert_eq!(model.hash_algorithm(), HashAlgorithm::Unknown);
         }
     }
 }

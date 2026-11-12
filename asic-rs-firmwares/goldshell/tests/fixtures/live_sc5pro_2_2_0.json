@@ -75,6 +75,12 @@
       "voltage": 12090.0
     }
   ],
+  "SUMMARY": [
+    {
+      "Elapsed": 741660,
+      "MHS 20s": 10861769.547
+    }
+  ],
   "status": {
     "firmware": "2.2.0",
     "hardware": "30.50.SA",
