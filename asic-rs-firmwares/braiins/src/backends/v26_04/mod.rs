@@ -16,7 +16,7 @@ use asic_rs_core::{
         command::MinerCommand,
         device::{DeviceInfo, HashAlgorithm},
         fan::FanData,
-        firmware::{FirmwareStats, FirmwareUpdate, RestoreStockOsResult},
+        firmware::{FirmwareImage, FirmwareStats, FirmwareUpdate, RestoreStockOsResult},
         hashrate::{HashRate, HashRateUnit},
         message::{MessageSeverity, MinerMessage},
         miner::TuningTarget,
@@ -800,6 +800,7 @@ impl SupportsTimezoneConfig for BraiinsV2604 {
 }
 
 impl GetPsuFans for BraiinsV2604 {}
+impl GetPsus for BraiinsV2604 {}
 
 impl GetMessages for BraiinsV2604 {
     fn parse_messages(&self, data: &HashMap<DataField, Value>) -> Vec<MinerMessage> {
@@ -837,11 +838,10 @@ impl GetMessages for BraiinsV2604 {
 #[async_trait]
 impl SetFaultLight for BraiinsV2604 {
     async fn set_fault_light(&self, fault: bool) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/locate", true, Some(json!(fault)), Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_set_fault_light(&self) -> bool {
         true
@@ -916,11 +916,12 @@ impl SupportsPoolsConfig for BraiinsV2604 {
 #[async_trait]
 impl Restart for BraiinsV2604 {
     async fn restart(&self) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        // The reboot endpoint answers `204 No Content`. Anything else is the
+        // firmware refusing, and its reason is worth more than `false`.
+        self.web
             .send_command("actions/reboot", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_restart(&self) -> bool {
         true
@@ -931,11 +932,10 @@ impl Restart for BraiinsV2604 {
 impl Pause for BraiinsV2604 {
     #[allow(unused_variables)]
     async fn pause(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/pause", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_pause(&self) -> bool {
         true
@@ -946,11 +946,10 @@ impl Pause for BraiinsV2604 {
 impl Resume for BraiinsV2604 {
     #[allow(unused_variables)]
     async fn resume(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/resume", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_resume(&self) -> bool {
         true
@@ -960,22 +959,18 @@ impl Resume for BraiinsV2604 {
 #[async_trait]
 impl ChangePassword for BraiinsV2604 {
     async fn change_password(&mut self, password: &str) -> anyhow::Result<bool> {
-        let success = self
-            .web
+        self.web
             .send_command(
                 "auth/password",
                 true,
                 Some(json!({ "password": password })),
                 Method::PUT,
             )
-            .await
-            .is_ok();
+            .await?;
 
-        if success {
-            let username = self.web.username().to_string();
-            self.set_auth(MinerAuth::new(username, password));
-        }
-        Ok(success)
+        let username = self.web.username().to_string();
+        self.set_auth(MinerAuth::new(username, password));
+        Ok(true)
     }
 
     fn supports_change_password(&self) -> bool {
@@ -997,17 +992,34 @@ impl ReadLogs for BraiinsV2604 {
 #[async_trait]
 impl FactoryReset for BraiinsV2604 {
     async fn factory_reset(&self) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/factory-reset", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
 
     fn supports_factory_reset(&self) -> bool {
         true
     }
 }
+
+#[async_trait]
+impl RestartMining for BraiinsV2604 {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        // `actions/restart` restarts BOSminer only; `actions/reboot` reboots the OS.
+        self.web
+            .send_command("actions/restart", true, None, Method::PUT)
+            .await?;
+        Ok(true)
+    }
+
+    fn supports_restart_mining(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod restart_mining_tests;
 
 #[async_trait]
 impl RestoreStockOs for BraiinsV2604 {
@@ -1030,8 +1042,16 @@ impl SupportsScalingConfig for BraiinsV2604 {
 
 #[async_trait]
 impl UpgradeFirmware for BraiinsV2604 {
+    /// Same two steps as the BOS web UI: upload the image, then install it by
+    /// the hash the miner reports. The miner reboots afterwards.
+    async fn upgrade_firmware(&self, image: FirmwareImage) -> anyhow::Result<bool> {
+        let hash = self.graphql.upload_firmware(image).await?;
+        self.graphql.start_upgrade(&hash).await?;
+        Ok(true)
+    }
+
     fn supports_upgrade_firmware(&self) -> bool {
-        false
+        true
     }
 
     fn supports_check_firmware_update(&self) -> bool {
@@ -1211,6 +1231,12 @@ mod tests {
         miner
     }
 
+    #[test]
+    fn supports_firmware_upgrade() {
+        let miner = miner_with_mock_web(1);
+        assert!(miner.supports_upgrade_firmware());
+    }
+
     #[tokio::test]
     async fn restore_stock_os_accepts_empty_204_response() -> anyhow::Result<()> {
         let MockHttpServer { port, task } = mock_http_server(204, "No Content", "").await?;
@@ -1243,6 +1269,39 @@ mod tests {
 
         let request = task.await??;
         assert!(request.starts_with("PUT /api/v1/actions/factory-reset HTTP/1.1\r\n"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_accepts_empty_204_response() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } = mock_http_server(204, "No Content", "").await?;
+        let miner = miner_with_mock_web(port);
+
+        assert!(miner.restart().await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("PUT /api/v1/actions/reboot HTTP/1.1\r\n"));
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: test-token"))
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_reports_why_the_firmware_refused() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } =
+            mock_http_server(500, "Internal Server Error", "reboot is not possible").await?;
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.restart().await.unwrap_err().to_string();
+
+        task.await??;
+        assert!(error.contains("500"), "{error}");
+        assert!(error.contains("reboot is not possible"), "{error}");
 
         Ok(())
     }
@@ -1458,5 +1517,95 @@ mod tests {
                 algo: HashAlgorithm::SHA256,
             }))
         );
+    }
+
+    #[tokio::test]
+    async fn control_calls_report_why_the_miner_refused() -> anyhow::Result<()> {
+        let refusal = r#"{"message":"BOSminer is not running"}"#;
+
+        let MockHttpServer { port, task } =
+            mock_http_server(412, "Precondition Failed", refusal).await?;
+        let error = miner_with_mock_web(port).pause(None).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/pause HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let MockHttpServer { port, task } =
+            mock_http_server(412, "Precondition Failed", refusal).await?;
+        let error = miner_with_mock_web(port).resume(None).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/resume HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let MockHttpServer { port, task } =
+            mock_http_server(412, "Precondition Failed", refusal).await?;
+        let error = miner_with_mock_web(port)
+            .set_fault_light(true)
+            .await
+            .unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/locate HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accepted_control_calls_still_return_true() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } =
+            mock_http_server(200, "OK", r#"{"already_paused":false}"#).await?;
+        assert!(miner_with_mock_web(port).pause(None).await?);
+        task.await??;
+
+        let MockHttpServer { port, task } =
+            mock_http_server(200, "OK", r#"{"already_running":false}"#).await?;
+        assert!(miner_with_mock_web(port).resume(None).await?);
+        task.await??;
+
+        let MockHttpServer { port, task } = mock_http_server(200, "OK", "true").await?;
+        assert!(miner_with_mock_web(port).set_fault_light(true).await?);
+        task.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn factory_reset_reports_why_the_miner_refused() -> anyhow::Result<()> {
+        let refusal = "another system task is already in progress";
+        let MockHttpServer { port, task } = mock_http_server(409, "Conflict", refusal).await?;
+
+        let error = miner_with_mock_web(port).factory_reset().await.unwrap_err();
+
+        let request = task.await??;
+        assert!(request.starts_with("PUT /api/v1/actions/factory-reset HTTP/1.1\r\n"));
+        assert!(error.to_string().contains("409"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn change_password_reports_why_the_miner_refused() -> anyhow::Result<()> {
+        let refusal = r#"{"message":"password is too short"}"#;
+        let MockHttpServer { port, task } = mock_http_server(400, "Bad Request", refusal).await?;
+        let mut miner = miner_with_mock_web(port);
+
+        let error = miner.change_password("x").await.unwrap_err();
+
+        let request = task.await??;
+        assert!(request.starts_with("PUT /api/v1/auth/password HTTP/1.1\r\n"));
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        Ok(())
     }
 }

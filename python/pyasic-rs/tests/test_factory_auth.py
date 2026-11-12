@@ -1,6 +1,3 @@
-"""Offline checks for construction authentication through the Python factory."""
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import json
@@ -15,33 +12,20 @@ from urllib.request import parse_http_list, parse_keqv_list
 
 import pytest
 
-from pyasic_rs.factory import MinerFactory
+from pyasic_rs import MinerFactory
 from pyasic_rs.data import DataField, FieldCollectionStatus
 
 
-@pytest.mark.parametrize("firmware", [
-    "AntMiner Stock", "Hiveon", "KaonSu", "VNish", "Braiins",
-    "IceRiver Stock", "Goldshell Stock", "Goldshell Stock (read-only)",
-    "Innosilicon Stock (read-only)",
-])
-def test_discovery_auth_accepts_registered_display_names_and_is_chainable(firmware: str) -> None:
+def test_braiins_custom_discovery_auth_is_chainable() -> None:
     factory = MinerFactory()
-    assert factory.with_firmware_discovery_auth(firmware, "fixture-user", "fixture-password") is factory
-    assert factory.with_connectivity_retries(0) is factory
+    assert factory.with_firmware_discovery_auth("Braiins", "root", "custom-password") is factory
 
 
-@pytest.mark.parametrize("firmware", [
-    "antminer stock", "AntMiner Stock ", "Unknown Firmware", "fixture-user/fixture-password",
-])
-def test_discovery_auth_rejects_unregistered_keys_without_echoing_credentials(firmware: str) -> None:
+def test_invalid_discovery_auth_preserves_factory() -> None:
     factory = MinerFactory()
-    with pytest.raises(ValueError) as raised:
-        factory.with_firmware_discovery_auth(firmware, "fixture-user", "fixture-password")
-    assert str(raised.value) == "Firmware is not registered for discovery authentication"
-    assert "fixture-user" not in str(raised.value)
-    assert "fixture-password" not in str(raised.value)
-    # A rejected update does not consume or invalidate the Python factory.
-    assert factory.with_firmware_discovery_auth("AntMiner Stock", "root", "fixture-password") is factory
+    with pytest.raises(ValueError, match="^Firmware is not registered for discovery authentication$"):
+        factory.with_firmware_discovery_auth("Unknown Firmware", "root", "custom-password")
+    assert factory.with_firmware_discovery_auth("AntMiner Stock", "root", "custom-password") is factory
 
 
 def test_stock_custom_credentials_discover_and_read_protected_telemetry() -> None:

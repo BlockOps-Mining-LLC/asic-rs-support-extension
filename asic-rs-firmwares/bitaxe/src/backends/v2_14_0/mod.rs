@@ -406,6 +406,7 @@ impl GetFans for Bitaxe2140 {
 impl GetPsuFans for Bitaxe2140 {
     // N/A
 }
+impl GetPsus for Bitaxe2140 {}
 impl GetFluidTemperature for Bitaxe2140 {
     // N/A
 }
@@ -620,6 +621,7 @@ impl FactoryReset for Bitaxe2140 {
     }
 }
 
+impl RestartMining for Bitaxe2140 {}
 impl RestoreStockOs for Bitaxe2140 {}
 
 #[async_trait]

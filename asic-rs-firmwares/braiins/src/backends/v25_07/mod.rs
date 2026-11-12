@@ -800,6 +800,7 @@ impl SupportsTimezoneConfig for BraiinsV2507 {
 }
 
 impl GetPsuFans for BraiinsV2507 {}
+impl GetPsus for BraiinsV2507 {}
 
 impl GetMessages for BraiinsV2507 {
     fn parse_messages(&self, data: &HashMap<DataField, Value>) -> Vec<MinerMessage> {
@@ -837,11 +838,10 @@ impl GetMessages for BraiinsV2507 {
 #[async_trait]
 impl SetFaultLight for BraiinsV2507 {
     async fn set_fault_light(&self, fault: bool) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/locate", true, Some(json!(fault)), Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_set_fault_light(&self) -> bool {
         true
@@ -916,11 +916,12 @@ impl SupportsPoolsConfig for BraiinsV2507 {
 #[async_trait]
 impl Restart for BraiinsV2507 {
     async fn restart(&self) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        // The reboot endpoint answers `204 No Content`. Anything else is the
+        // firmware refusing, and its reason is worth more than `false`.
+        self.web
             .send_command("actions/reboot", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_restart(&self) -> bool {
         true
@@ -931,11 +932,10 @@ impl Restart for BraiinsV2507 {
 impl Pause for BraiinsV2507 {
     #[allow(unused_variables)]
     async fn pause(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/pause", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_pause(&self) -> bool {
         true
@@ -946,11 +946,10 @@ impl Pause for BraiinsV2507 {
 impl Resume for BraiinsV2507 {
     #[allow(unused_variables)]
     async fn resume(&self, at_time: Option<Duration>) -> anyhow::Result<bool> {
-        Ok(self
-            .web
+        self.web
             .send_command("actions/resume", true, None, Method::PUT)
-            .await
-            .is_ok())
+            .await?;
+        Ok(true)
     }
     fn supports_resume(&self) -> bool {
         true
@@ -989,6 +988,24 @@ impl FactoryReset for BraiinsV2507 {
         false
     }
 }
+
+#[async_trait]
+impl RestartMining for BraiinsV2507 {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        // `actions/restart` restarts BOSminer only; `actions/reboot` reboots the OS.
+        self.web
+            .send_command("actions/restart", true, None, Method::PUT)
+            .await?;
+        Ok(true)
+    }
+
+    fn supports_restart_mining(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod restart_mining_tests;
 
 impl RestoreStockOs for BraiinsV2507 {}
 
@@ -1071,6 +1088,87 @@ mod tests {
         WEB_NETWORK_COMMAND as V11_NETWORK, WEB_PERFORMANCE_TUNER_STATE_COMMAND as V11_TUNER,
         WEB_POOLS_COMMAND as V11_POOLS, WEB_VERSION_COMMAND as V11_VERSION,
     };
+
+    /// Answer the login, then answer one more request with `response` and
+    /// hand that request back.
+    async fn mock_web_server(
+        response: &'static str,
+    ) -> anyhow::Result<(u16, tokio::task::JoinHandle<anyhow::Result<String>>)> {
+        use anyhow::Context;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const LOGIN: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\nConnection: close\r\n\r\n{\"token\":\"test-token\"}";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            let mut request = Vec::new();
+            for response in [LOGIN, response] {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                        .await
+                        .context("timed out waiting for HTTP request")??;
+                request.clear();
+                let mut chunk = [0_u8; 1024];
+                // The login carries a body; one read past the headers is
+                // enough for a request this small.
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let bytes_read = socket.read(&mut chunk).await?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..bytes_read]);
+                }
+                socket.write_all(response.as_bytes()).await?;
+            }
+            Ok(String::from_utf8(request)?)
+        });
+
+        Ok((port, task))
+    }
+
+    fn miner_with_mock_web(port: u16) -> BraiinsV2507 {
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        let mut miner = BraiinsV2507::new(ip, AntMinerModel::S21Pro);
+        miner.web = BraiinsWebAPI::new_with_port(ip, port, MinerAuth::new("root", "root"));
+        miner
+    }
+
+    #[tokio::test]
+    async fn restart_accepts_empty_204_response() -> anyhow::Result<()> {
+        let (port, task) =
+            mock_web_server("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n").await?;
+        let miner = miner_with_mock_web(port);
+
+        assert!(miner.restart().await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("PUT /api/v1/actions/reboot HTTP/1.1\r\n"));
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: test-token"))
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_reports_why_the_firmware_refused() -> anyhow::Result<()> {
+        let (port, task) = mock_web_server(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 22\r\nConnection: close\r\n\r\nreboot is not possible",
+        )
+        .await?;
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.restart().await.unwrap_err().to_string();
+
+        task.await??;
+        assert!(error.contains("500"), "{error}");
+        assert!(error.contains("reboot is not possible"), "{error}");
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_braiins_v25_07() {
@@ -1355,5 +1453,128 @@ mod tests {
                 algo: HashAlgorithm::SHA256,
             }))
         );
+    }
+
+    /// Answers the login this backend always makes first, then the control
+    /// request with `(status, reason, body)`, and hands back that request.
+    async fn mock_miner(
+        status: u16,
+        reason: &'static str,
+        body: &'static str,
+    ) -> anyhow::Result<(
+        BraiinsV2507,
+        tokio::task::JoinHandle<anyhow::Result<String>>,
+    )> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        let mut miner = BraiinsV2507::new(ip, AntMinerModel::S19XP);
+        miner.web = BraiinsWebAPI::new_with_port(
+            ip,
+            listener.local_addr()?.port(),
+            MinerAuth::new("root", "root"),
+        );
+
+        let task = tokio::spawn(async move {
+            let mut last_request = String::new();
+            for (status, reason, body) in [
+                (200, "OK", r#"{"token":"test-token"}"#),
+                (status, reason, body),
+            ] {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept()).await??;
+
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    if let Some(header_end) = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|position| position + 4)
+                    {
+                        let headers = std::str::from_utf8(&request[..header_end])?;
+                        let content_length = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find_map(|(name, value)| {
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or_default();
+                        if request.len() >= header_end + content_length {
+                            break;
+                        }
+                    }
+                    let bytes_read = socket.read(&mut chunk).await?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..bytes_read]);
+                }
+                last_request = String::from_utf8(request)?;
+
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await?;
+            }
+            Ok(last_request)
+        });
+
+        Ok((miner, task))
+    }
+
+    #[tokio::test]
+    async fn control_calls_report_why_the_miner_refused() -> anyhow::Result<()> {
+        let refusal = r#"{"message":"BOSminer is not running"}"#;
+
+        let (miner, task) = mock_miner(412, "Precondition Failed", refusal).await?;
+        let error = miner.pause(None).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/pause HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let (miner, task) = mock_miner(412, "Precondition Failed", refusal).await?;
+        let error = miner.resume(None).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/resume HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        let (miner, task) = mock_miner(412, "Precondition Failed", refusal).await?;
+        let error = miner.set_fault_light(true).await.unwrap_err();
+        assert!(
+            task.await??
+                .starts_with("PUT /api/v1/actions/locate HTTP/1.1\r\n")
+        );
+        assert!(error.to_string().contains("412"), "{error}");
+        assert!(error.to_string().contains(refusal), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accepted_control_calls_still_return_true() -> anyhow::Result<()> {
+        let (miner, task) = mock_miner(200, "OK", r#"{"already_paused":false}"#).await?;
+        assert!(miner.pause(None).await?);
+        task.await??;
+
+        let (miner, task) = mock_miner(200, "OK", r#"{"already_running":false}"#).await?;
+        assert!(miner.resume(None).await?);
+        task.await??;
+
+        let (miner, task) = mock_miner(200, "OK", "true").await?;
+        assert!(miner.set_fault_light(true).await?);
+        task.await??;
+
+        Ok(())
     }
 }

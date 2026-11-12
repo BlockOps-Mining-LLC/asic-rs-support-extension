@@ -133,7 +133,7 @@ fn browser_miner_conf_payload(miner_conf: &Value) -> serde_json::Map<String, Val
 /// `set_miner_conf.cgi` only overwrites the pool slots it is sent, so a list
 /// shorter than the miner's three slots leaves the old trailing pools in
 /// place. Blank the unused slots so they are removed.
-fn pools_payload(config: Vec<PoolGroupConfig>) -> Vec<Value> {
+fn pools_payload(config: Vec<PoolGroupConfig>) -> anyhow::Result<Vec<Value>> {
     let mut pools: Vec<Value> = config
         .into_iter()
         .flat_map(|group| group.pools.into_iter())
@@ -146,8 +146,11 @@ fn pools_payload(config: Vec<PoolGroupConfig>) -> Vec<Value> {
         })
         .collect();
 
+    if pools.len() > 3 {
+        anyhow::bail!("stock Antminer supports at most three pools");
+    }
     pools.resize(3, json!({ "url": "", "user": "", "pass": "" }));
-    pools
+    Ok(pools)
 }
 
 fn miner_conf_with_pools(miner_conf: &Value, pools: Vec<Value>) -> Value {
@@ -745,6 +748,7 @@ impl GetFluidTemperature for AntMinerV2020 {
 }
 
 impl GetPsuFans for AntMinerV2020 {}
+impl GetPsus for AntMinerV2020 {}
 impl GetTuningCapabilities for AntMinerV2020 {}
 impl SupportsTimezoneConfig for AntMinerV2020 {}
 
@@ -762,10 +766,11 @@ impl SetFaultLight for AntMinerV2020 {
         true
     }
 
-    #[allow(unused_variables)]
     async fn set_fault_light(&self, fault: bool) -> anyhow::Result<bool> {
-        self.web.blink(fault).await?;
-        Ok(true)
+        Ok(super::blink_response_matches(
+            &self.web.blink(fault).await?,
+            fault,
+        ))
     }
 }
 
@@ -821,8 +826,6 @@ impl SupportsPoolsConfig for AntMinerV2020 {
             });
         }
 
-        pools.truncate(3);
-
         Ok(vec![PoolGroupConfig {
             name: String::new(),
             quota: 1,
@@ -831,7 +834,7 @@ impl SupportsPoolsConfig for AntMinerV2020 {
     }
 
     async fn set_pools_config(&self, config: Vec<PoolGroupConfig>) -> anyhow::Result<bool> {
-        let pools = pools_payload(config);
+        let pools = pools_payload(config)?;
         let miner_conf = self.web.get_miner_conf().await?;
         let miner_conf = miner_conf_with_pools(&miner_conf, pools);
 
@@ -850,7 +853,8 @@ impl Restart for AntMinerV2020 {
         true
     }
     async fn restart(&self) -> anyhow::Result<bool> {
-        Ok(self.web.reboot().await.is_ok())
+        self.web.reboot().await?;
+        Ok(true)
     }
 }
 
@@ -955,6 +959,8 @@ impl FactoryReset for AntMinerV2020 {
         true
     }
 }
+
+impl RestartMining for AntMinerV2020 {}
 
 impl RestoreStockOs for AntMinerV2020 {}
 
@@ -1134,6 +1140,78 @@ mod tests {
         AM_DEVS, AM_POOLS, AM_STATS, AM_SUMMARY, AM_SYSTEM_INFO, AM_VERSION,
     };
 
+    /// Answer one HTTP request with `response` and hand back what was asked.
+    async fn mock_reboot_server(
+        response: &'static str,
+    ) -> anyhow::Result<(u16, tokio::task::JoinHandle<anyhow::Result<String>>)> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .context("timed out waiting for HTTP request")??;
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let bytes_read = socket.read(&mut chunk).await?;
+                if bytes_read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..bytes_read]);
+            }
+            socket.write_all(response.as_bytes()).await?;
+            Ok(String::from_utf8(request)?)
+        });
+
+        Ok((port, task))
+    }
+
+    #[tokio::test]
+    async fn restart_sends_get_and_accepts_a_response_that_is_not_json() -> anyhow::Result<()> {
+        let (port, task) =
+            mock_reboot_server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await?;
+        let miner = miner_with_mock_web(port);
+
+        assert!(miner.restart().await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("GET /cgi-bin/reboot.cgi HTTP/1.1\r\n"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_reports_why_the_firmware_refused() -> anyhow::Result<()> {
+        let (port, task) = mock_reboot_server(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\nConnection: close\r\n\r\nreboot failed",
+        )
+        .await?;
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.restart().await.unwrap_err().to_string();
+
+        task.await??;
+        assert!(error.contains("500"), "{error}");
+        assert!(error.contains("reboot failed"), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_reports_an_unreachable_miner() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.restart().await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("reboot request failed"));
+    }
+
     #[tokio::test]
     async fn control_board_falls_back_to_kernel_and_prefers_subtype() {
         let miner = AntMinerV2020::new(IpAddr::from([127, 0, 0, 1]), AntMinerModel::Z15);
@@ -1191,12 +1269,35 @@ mod tests {
                 name: String::new(),
                 quota: 1,
                 pools: vec![pool(1), pool(2)],
-            }]),
+            }])
+            .unwrap(),
             vec![
                 json!({"url": "stratum+tcp://pool1.example:3333", "user": "worker.1", "pass": "x"}),
                 json!({"url": "stratum+tcp://pool2.example:3333", "user": "worker.2", "pass": "x"}),
                 json!({"url": "", "user": "", "pass": ""}),
             ]
+        );
+    }
+
+    #[test]
+    fn pools_payload_rejects_more_than_three_pools_across_groups() {
+        let pool = || PoolConfig {
+            url: PoolURL::from("stratum+tcp://pool.example:3333".to_string()),
+            username: "worker".to_string(),
+            password: "x".to_string(),
+        };
+        let groups = (0..2)
+            .map(|_| PoolGroupConfig {
+                name: String::new(),
+                quota: 1,
+                pools: vec![pool(), pool()],
+            })
+            .collect();
+        assert!(
+            pools_payload(groups)
+                .unwrap_err()
+                .to_string()
+                .contains("at most three pools")
         );
     }
 
@@ -1409,6 +1510,139 @@ mod tests {
         assert_eq!(miner_data.ip, ip);
         assert!(miner_data.timestamp > 0);
         assert!(!miner_data.schema_version.is_empty());
+
+        Ok(())
+    }
+
+    struct MockHttpServer {
+        port: u16,
+        task: tokio::task::JoinHandle<anyhow::Result<String>>,
+    }
+
+    /// Answers each request in turn with the next `(status, reason, body)` and
+    /// hands back the last request it saw.
+    async fn mock_http_server(
+        responses: Vec<(u16, &'static str, &'static str)>,
+    ) -> anyhow::Result<MockHttpServer> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            let mut last_request = String::new();
+            for (status, reason, body) in responses {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                        .await
+                        .context("timed out waiting for HTTP request")??;
+
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    if let Some(header_end) = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|position| position + 4)
+                    {
+                        let headers = std::str::from_utf8(&request[..header_end])?;
+                        let content_length = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find_map(|(name, value)| {
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or_default();
+                        if request.len() >= header_end + content_length {
+                            break;
+                        }
+                    }
+                    let bytes_read = socket.read(&mut chunk).await?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..bytes_read]);
+                }
+                last_request = String::from_utf8(request)?;
+
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await?;
+            }
+            Ok(last_request)
+        });
+
+        Ok(MockHttpServer { port, task })
+    }
+
+    fn miner_with_mock_web(port: u16) -> AntMinerV2020 {
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        let mut miner = AntMinerV2020::new(ip, AntMinerModel::S19);
+        miner.web = AntMinerWebAPI::new_with_port(ip, port, MinerAuth::new("root", "root"));
+        miner
+    }
+
+    #[tokio::test]
+    async fn set_fault_light_reports_why_the_miner_refused() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } = mock_http_server(vec![(
+            500,
+            "Internal Server Error",
+            "blink.cgi: cannot reach bmminer",
+        )])
+        .await?;
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.set_fault_light(true).await.unwrap_err();
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /cgi-bin/blink.cgi HTTP/1.1\r\n"));
+        let error = error.to_string();
+        assert!(error.contains("500"), "{error}");
+        assert!(error.contains("blink.cgi: cannot reach bmminer"), "{error}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_fault_light_still_returns_true_when_accepted() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } =
+            mock_http_server(vec![(200, "OK", r#"{"code":"B000"}"#)]).await?;
+        let miner = miner_with_mock_web(port);
+
+        assert!(miner.set_fault_light(true).await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /cgi-bin/blink.cgi HTTP/1.1\r\n"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_pools_config_reports_why_the_miner_refused() -> anyhow::Result<()> {
+        let MockHttpServer { port, task } = mock_http_server(vec![
+            (200, "OK", r#"{"pools":[],"bitmain-fan-ctrl":false}"#),
+            (
+                500,
+                "Internal Server Error",
+                "set_miner_conf.cgi: config is locked",
+            ),
+        ])
+        .await?;
+        let miner = miner_with_mock_web(port);
+
+        let error = miner.set_pools_config(vec![]).await.unwrap_err();
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /cgi-bin/set_miner_conf.cgi HTTP/1.1\r\n"));
+        let error = error.to_string();
+        assert!(error.contains("500"), "{error}");
+        assert!(
+            error.contains("set_miner_conf.cgi: config is locked"),
+            "{error}"
+        );
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::IpAddr, str::FromStr, time::Duration};
 
-use anyhow;
+use super::shared::{format_error, releases, web::PowerPlayWebAPI};
 use asic_rs_core::{
     config::{
         collector::{ConfigCollector, ConfigExtractor, ConfigField, ConfigLocation},
@@ -18,7 +18,7 @@ use asic_rs_core::{
         command::MinerCommand,
         device::{DeviceInfo, HashAlgorithm},
         fan::FanData,
-        firmware::{FirmwareImage, RestoreStockOsResult},
+        firmware::{FirmwareImage, FirmwareStats, RestoreStockOsResult},
         hashrate::{HashRate, HashRateUnit},
         message::{MessageSeverity, MinerMessage},
         miner::TuningTarget,
@@ -35,14 +35,13 @@ use async_trait::async_trait;
 use macaddr::MacAddr;
 use measurements::{AngularVelocity, Frequency, Power, Temperature, Voltage};
 use reqwest::Method;
+use semver::Version;
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
-use web::PowerPlayWebAPI;
 
 use crate::firmware::EPicFirmware;
 
-mod web;
-
+/// Legacy EPIC firmware, collecting messages only from the summary last error.
 #[derive(Debug)]
 pub struct PowerPlayV1 {
     ip: IpAddr,
@@ -55,7 +54,7 @@ impl PowerPlayV1 {
     pub fn new(ip: IpAddr, model: impl MinerModel) -> Self {
         let auth = Self::default_auth();
         let hash_algorithm = model.hash_algorithm();
-        PowerPlayV1 {
+        Self {
             ip,
             web: PowerPlayWebAPI::new(ip, 4028, auth),
             device_info: DeviceInfo::new(model, EPicFirmware::default(), hash_algorithm),
@@ -70,8 +69,8 @@ impl PowerPlayV1 {
         miner
     }
 
-    pub(crate) async fn detect_restore_stock_os_support(&mut self) {
-        let _ = self.restore_stock_os_support().await;
+    pub(crate) fn set_restore_stock_os_support(&mut self, supported: bool) {
+        self.restore_stock_os_supported = OnceCell::new_with(Some(supported));
     }
 
     async fn restore_stock_os_support(&self) -> anyhow::Result<bool> {
@@ -1165,6 +1164,7 @@ impl GetFans for PowerPlayV1 {
 }
 
 impl GetPsuFans for PowerPlayV1 {}
+impl GetPsus for PowerPlayV1 {}
 impl GetTuningCapabilities for PowerPlayV1 {}
 
 impl GetFluidTemperature for PowerPlayV1 {}
@@ -1322,57 +1322,18 @@ impl GetLightFlashing for PowerPlayV1 {
     }
 }
 
-fn format_last_error(last_error: &Value) -> Option<String> {
-    match last_error {
-        Value::Null => None,
-        Value::String(message) => {
-            let message = message.trim();
-            if message.is_empty() {
-                return None;
-            }
-
-            // Older PowerPlay versions may serialize the externally tagged
-            // MinerError object into a JSON string instead of returning the
-            // object directly.
-            serde_json::from_str::<Value>(message)
-                .ok()
-                .filter(|value| value.is_object())
-                .and_then(|value| format_last_error(&value))
-                .or_else(|| Some(message.to_string()))
-        }
-        Value::Object(error) if error.is_empty() => None,
-        Value::Object(error) if error.len() == 1 => {
-            let (kind, details) = error.iter().next()?;
-            match details {
-                Value::Null => Some(kind.clone()),
-                Value::String(message) if message.trim().is_empty() => Some(kind.clone()),
-                Value::String(message) => Some(message.trim().to_string()),
-                details => Some(format!("{kind}: {details}")),
-            }
-        }
-        value => Some(value.to_string()),
-    }
-}
-
 impl GetMessages for PowerPlayV1 {
     fn parse_messages(&self, data: &HashMap<DataField, Value>) -> Vec<MinerMessage> {
-        let mut messages = Vec::new();
+        let Some(data) = data.get(&DataField::Messages) else {
+            return Vec::new();
+        };
         let timestamp = unix_timestamp_secs();
+        let errors = data.pointer("/Status/Last Error").and_then(format_error);
 
-        if let Some(last_error) = data
-            .get(&DataField::Messages)
-            .and_then(|v| v.pointer("/Status/Last Error"))
-            .and_then(format_last_error)
-        {
-            messages.push(MinerMessage::new(
-                timestamp as u32,
-                0,
-                last_error,
-                MessageSeverity::Error,
-            ));
-        }
-
-        messages
+        errors
+            .into_iter()
+            .map(|error| MinerMessage::new(timestamp as u32, 0, error, MessageSeverity::Error))
+            .collect()
     }
 }
 
@@ -1986,6 +1947,18 @@ impl FactoryReset for PowerPlayV1 {
 }
 
 #[async_trait]
+impl RestartMining for PowerPlayV1 {
+    async fn restart_mining(&self) -> anyhow::Result<bool> {
+        self.web.soft_reboot().await?;
+        Ok(true)
+    }
+
+    fn supports_restart_mining(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait]
 impl RestoreStockOs for PowerPlayV1 {
     async fn restore_stock_os(&self) -> anyhow::Result<RestoreStockOsResult> {
         if !self.restore_stock_os_support().await? {
@@ -2009,6 +1982,36 @@ impl RestoreStockOs for PowerPlayV1 {
 
 #[async_trait]
 impl UpgradeFirmware for PowerPlayV1 {
+    fn supports_check_firmware_update(&self) -> bool {
+        true
+    }
+
+    async fn check_firmware_update(&self) -> anyhow::Result<FirmwareStats> {
+        self.check_firmware_update_with_client(self).await
+    }
+
+    fn supports_check_firmware_update_with_client(&self) -> bool {
+        true
+    }
+
+    async fn check_firmware_update_with_client(
+        &self,
+        client: &dyn APIClient,
+    ) -> anyhow::Result<FirmwareStats> {
+        let data = DataCollector::new_with_client(self, client)
+            .collect(&[DataField::ControlBoardVersion, DataField::FirmwareVersion])
+            .await;
+        let platform = data.extract_nested::<String>(DataField::ControlBoardVersion, "platform");
+        let cpu = data.extract_nested::<String>(DataField::ControlBoardVersion, "cpu");
+        let repository =
+            releases::repository(platform.as_deref(), cpu.as_deref(), &self.device_info.make)?;
+        let current_version = self
+            .parse_firmware_version(&data)
+            .as_deref()
+            .and_then(releases::parse_version);
+        releases::check(repository, current_version).await
+    }
+
     async fn upgrade_firmware(&self, image: FirmwareImage) -> anyhow::Result<bool> {
         self.web.upgrade_firmware(image).await
     }
@@ -2032,6 +2035,10 @@ impl HasAuth for PowerPlayV1 {
 
 impl Validate for PowerPlayV1 {
     type Firmware = EPicFirmware;
+
+    fn validate(version: Option<&Version>) -> bool {
+        version.is_none_or(|v| *v < Version::new(1, 28, 4))
+    }
 }
 
 impl SupportsTemperatureConfig for PowerPlayV1 {}
@@ -2196,13 +2203,13 @@ mod tests {
 
         for (capabilities, expected) in cases {
             let MockJsonServer { port, task } = mock_json_server(capabilities).await?;
-            let mut miner = PowerPlayV1::new_with_port(
+            let miner = PowerPlayV1::new_with_port(
                 IpAddr::from([127, 0, 0, 1]),
                 AntMinerModel::S19XP,
                 port,
             );
 
-            miner.detect_restore_stock_os_support().await;
+            assert_eq!(miner.restore_stock_os_support().await?, expected);
 
             let request = task.await??;
             assert!(request.starts_with("GET /capabilities HTTP/1.1\r\n"));
@@ -2266,6 +2273,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_mining_posts_authenticated_soft_reboot() -> anyhow::Result<()> {
+        let MockJsonServer { port, task } =
+            mock_json_server(json!({ "result": true, "error": null })).await?;
+        let mut miner =
+            PowerPlayV1::new_with_port(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S19XP, port);
+        miner.set_auth(MinerAuth::new("", "test-password"));
+
+        assert!(miner.supports_restart_mining());
+        assert!(miner.restart_mining().await?);
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /softreboot HTTP/1.1\r\n"));
+        assert_eq!(
+            json_request_body(&request)?,
+            json!({ "param": null, "password": "test-password" })
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_mining_surfaces_soft_reboot_errors() -> anyhow::Result<()> {
+        let MockJsonServer { port, task } =
+            mock_json_server(json!({ "result": false, "error": "Wrong password" })).await?;
+        let miner =
+            PowerPlayV1::new_with_port(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S19XP, port);
+
+        let error = miner.restart_mining().await.unwrap_err();
+
+        let request = task.await??;
+        assert!(request.starts_with("POST /softreboot HTTP/1.1\r\n"));
+        assert!(error.to_string().contains("Wrong password"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn restore_stock_os_refuses_unadvertised_endpoint() {
         let miner =
             PowerPlayV1::new_with_port(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S19XP, 1);
@@ -2288,10 +2332,10 @@ mod tests {
             ("200 OK", json!({ "result": true, "error": null })),
         ])
         .await?;
-        let mut miner =
+        let miner =
             PowerPlayV1::new_with_port(IpAddr::from([127, 0, 0, 1]), AntMinerModel::S19XP, port);
 
-        miner.detect_restore_stock_os_support().await;
+        assert!(miner.restore_stock_os_support().await.is_err());
         assert!(miner.supports_restore_stock_os());
         assert_eq!(
             miner.restore_stock_os().await?,

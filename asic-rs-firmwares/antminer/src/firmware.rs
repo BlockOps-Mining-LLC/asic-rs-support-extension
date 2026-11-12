@@ -15,7 +15,7 @@ use asic_rs_core::{
         miner::{HasDefaultAuth, Miner, MinerAuth, MinerConstructor},
         model::MinerModel,
     },
-    util::build_discovery_client,
+    util::{build_discovery_client, send_rpc_command},
 };
 use asic_rs_makes_antminer::make::AntMinerMake;
 use asic_rs_makes_antminer::models::AntMinerModel;
@@ -94,6 +94,18 @@ fn parse_model_response(
 ) -> Result<AntMinerCompatibleModel, ModelSelectionError> {
     let model = json_data[model_key].as_str().unwrap_or("").to_uppercase();
 
+    // When stock firmware cannot name the product it reports the hashboard
+    // part name as the model (for example "Antminer BHB68701"). Some builds
+    // still carry the real product in `product_type`, so prefer it only when
+    // the model field itself is not a known model.
+    if !AntMinerMake::parse_model(model.clone()).is_ok_and(|m| m.is_known())
+        && let Some(product) = json_data["product_type"].as_str()
+        && let Ok(product_model) = AntMinerMake::parse_model(product.to_uppercase())
+        && product_model.is_known()
+    {
+        return Ok(AntMinerCompatibleModel::AntMiner(product_model));
+    }
+
     if model == "ANTMINER BHB42XXX" {
         Ok(AntMinerCompatibleModel::Unknown(UnknownMinerModel {
             name: model,
@@ -101,6 +113,38 @@ fn parse_model_response(
     } else {
         AntMinerMake::parse_model(model).map(AntMinerCompatibleModel::AntMiner)
     }
+}
+
+fn parse_rpc_model(data: &Value) -> Result<AntMinerCompatibleModel, ModelSelectionError> {
+    let info = data["VERSION"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or(ModelSelectionError::UnexpectedModelResponse)?;
+    let model = info["Type"]
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+        .ok_or(ModelSelectionError::UnexpectedModelResponse)?;
+    parse_model_response(serde_json::json!({"miner_type": model}), "miner_type")
+}
+
+/// Fetch the model using unauthenticated RPC when web access fails.
+async fn get_model_with_rpc(ip: IpAddr) -> Result<AntMinerCompatibleModel, ModelSelectionError> {
+    let data = send_rpc_command(&ip, "version")
+        .await
+        .ok_or(ModelSelectionError::NoModelResponse)?;
+    parse_rpc_model(&data)
+}
+
+fn parse_rpc_version(data: &Value) -> Option<semver::Version> {
+    data["VERSION"][0]["CompileTime"]
+        .as_str()
+        .and_then(parse_version_date)
+}
+
+/// Fetch the firmware version using unauthenticated RPC when web access fails.
+async fn get_version_with_rpc(ip: IpAddr) -> Option<semver::Version> {
+    let data = send_rpc_command(&ip, "version").await?;
+    parse_rpc_version(&data)
 }
 
 /// Fetch the model from a miner using digest auth.
@@ -192,16 +236,22 @@ async fn get_version_with_auth(ip: IpAddr, auth: &MinerAuth) -> Option<semver::V
 impl MinerFirmware for AntMinerStockFirmware {
     type Model = AntMinerCompatibleModel;
 
-    /// Uses default credentials. For custom credentials, use `build_miner`
-    /// which passes auth through to the underlying digest-auth requests.
+    /// Uses default web credentials, falling back to unauthenticated RPC.
+    /// For custom web credentials, use `build_miner`.
     async fn get_model(ip: IpAddr) -> Result<Self::Model, ModelSelectionError> {
         let default = crate::backends::v2020::AntMinerV2020::default_auth();
-        get_model_with_auth(ip, &default).await
+        match get_model_with_auth(ip, &default).await {
+            Ok(model) => Ok(model),
+            Err(_) => get_model_with_rpc(ip).await,
+        }
     }
 
     async fn get_version(ip: IpAddr) -> Option<semver::Version> {
         let default = crate::backends::v2020::AntMinerV2020::default_auth();
-        get_version_with_auth(ip, &default).await
+        match get_version_with_auth(ip, &default).await {
+            Some(version) => Some(version),
+            None => get_version_with_rpc(ip).await,
+        }
     }
 }
 
@@ -228,8 +278,15 @@ impl FirmwareEntry for AntMinerStockFirmware {
     ) -> Result<Box<dyn Miner>, ModelSelectionError> {
         let default = crate::backends::v2020::AntMinerV2020::default_auth();
         let resolved = auth.unwrap_or(&default);
-        let model = get_model_with_auth(ip, resolved).await?;
-        let version = get_version_with_auth(ip, resolved).await;
+        // Prefer web identity: some models need its product_type override.
+        let model = match get_model_with_auth(ip, resolved).await {
+            Ok(model) => model,
+            Err(_) => get_model_with_rpc(ip).await?,
+        };
+        let version = match get_version_with_auth(ip, resolved).await {
+            Some(version) => Some(version),
+            None => get_version_with_rpc(ip).await,
+        };
         let mut miner = crate::backends::AntMiner::new(ip, model, version);
         if let Some(auth) = auth {
             miner.set_auth(auth.clone());
@@ -240,10 +297,15 @@ impl FirmwareEntry for AntMinerStockFirmware {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, str::FromStr, sync::Arc};
+    use std::{collections::HashMap, net::IpAddr, str::FromStr, sync::Arc, time::Duration};
 
     use anyhow::Context;
     use asic_rs_core::data::command::MinerCommand;
+    use asic_rs_core::data::{
+        collector::{DataCollector, DataField},
+        hashrate::HashRateUnit,
+    };
+    use asic_rs_core::test::api::MockAPIClient;
     use asic_rs_core::test::util::get_miner;
     use asic_rs_core::traits::miner::Validate;
     use asic_rs_makes_antminer::models::AntMinerModel;
@@ -251,14 +313,136 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_system_info_date_selects_legacy_backend() {
+    fn legacy_system_info_date_selects_v2018_backend() {
         let version = parse_version_date("Fri Jul 3 11:39:06 CST 2020").unwrap();
         assert_eq!(version, semver::Version::new(2020, 7, 3));
-        assert!(crate::backends::v2020::AntMinerV2020::validate(Some(
+        assert!(crate::backends::v2018::AntMinerV2018::validate(Some(
             &version
         )));
 
         assert!(parse_version_date("FR-1.12(251009-S21)").is_none());
+    }
+
+    #[tokio::test]
+    async fn z15e_2021_build_collects_legacy_telemetry() -> anyhow::Result<()> {
+        // Read-only responses from an authorized Z15e. System info retains
+        // only model, kernel, and build date; no network or pool identity.
+        let system_info: Value = serde_json::from_str(include_str!(
+            "test/json/v2018/z15e_2021_01_12/get_system_info.json"
+        ))?;
+        let stats: Value = serde_json::from_str(include_str!(
+            "test/json/v2018/z15e_2021_01_12/miner_stats.json"
+        ))?;
+        let summary: Value =
+            serde_json::from_str(include_str!("test/json/v2018/z15e_2021_01_12/summary.json"))?;
+        // TCP stats omits a comma between the two STATS objects. Collection
+        // must use the valid HTTP response rather than attempting this JSON.
+        assert!(
+            serde_json::from_str::<Value>(include_str!(
+                "test/json/v2018/z15e_2021_01_12/tcp_stats.txt"
+            ))
+            .is_err()
+        );
+
+        let model = parse_model_response(system_info.clone(), "minertype")?;
+        assert_eq!(model.to_string(), "Z15e");
+        assert_eq!(model.hash_algorithm(), HashAlgorithm::Equihash);
+        let version = parse_version_date(
+            system_info["system_filesystem_version"]
+                .as_str()
+                .context("build date")?,
+        )
+        .context("parsed build date")?;
+        assert_eq!(version, semver::Version::new(2021, 1, 12));
+        let miner = crate::backends::AntMiner::new([127, 0, 0, 1].into(), model, Some(version));
+        let mock_api = MockAPIClient::new(HashMap::from([
+            (
+                MinerCommand::WebAPI {
+                    command: "get_system_info",
+                    parameters: None,
+                },
+                system_info,
+            ),
+            (
+                MinerCommand::WebAPI {
+                    command: "miner_stats",
+                    parameters: None,
+                },
+                stats,
+            ),
+            (
+                MinerCommand::RPC {
+                    command: "summary",
+                    parameters: None,
+                },
+                summary,
+            ),
+        ]));
+        let mut collector = DataCollector::new_with_client(miner.as_ref(), &mock_api);
+        let report = collector
+            .collect_report(&[
+                DataField::FirmwareVersion,
+                DataField::ControlBoardVersion,
+                DataField::Hashrate,
+                DataField::ExpectedHashrate,
+                DataField::Hashboards,
+                DataField::Fans,
+                DataField::Uptime,
+                DataField::Wattage,
+            ])
+            .await;
+        assert_eq!(report.diagnostics.failed_commands, 0);
+        let data = miner.parse_data(report.values);
+
+        assert_eq!(data.device_info.model, "Z15e");
+        assert_eq!(data.device_info.algo, HashAlgorithm::Equihash);
+        assert_eq!(
+            data.firmware_version.as_deref(),
+            Some("Tue Jan 12 16:16:20 CST 2021")
+        );
+        assert_eq!(
+            data.control_board_version.context("control board")?.name,
+            "Xilinx"
+        );
+        let hashrate = data.hashrate.context("hashrate")?;
+        assert_eq!(hashrate.unit, HashRateUnit::KiloSol);
+        assert!((hashrate.value - 305.38109).abs() < 0.00001);
+        assert_eq!(
+            data.expected_hashrate.context("expected hashrate")?.value,
+            200.0
+        );
+        assert_eq!(data.expected_hashboards, Some(3));
+        assert_eq!(data.hashboards.len(), 3);
+        assert_eq!(data.hashboards[0].active, Some(true));
+        assert_eq!(data.hashboards[1].active, Some(false));
+        assert_eq!(data.hashboards[2].active, Some(true));
+        assert_eq!(data.total_chips, Some(6));
+        assert_eq!(
+            data.average_temperature
+                .context("temperature")?
+                .as_celsius(),
+            48.5
+        );
+        assert_eq!(data.hashboards[1].board_temperature, None);
+        assert_eq!(
+            data.hashboards[0]
+                .outlet_chip_temperature
+                .context("chip temperature")?
+                .as_celsius(),
+            70.0
+        );
+        let board_rate = data.hashboards[0]
+            .hashrate
+            .as_ref()
+            .context("board hashrate")?;
+        assert_eq!(board_rate.unit, HashRateUnit::KiloSol);
+        assert!((board_rate.value - 146.79).abs() < 0.00001);
+        assert_eq!(data.fans.len(), 4);
+        assert_eq!(data.uptime, Some(Duration::from_secs(2656)));
+        assert_eq!(data.wattage, None);
+        assert!(!miner.supports_fan_config());
+
+        Ok(())
     }
 
     /// Live model detection always yields an [`AntMinerCompatibleModel`], never
@@ -286,6 +470,69 @@ mod tests {
             .hash_algorithm(),
             HashAlgorithm::Unknown
         );
+    }
+
+    /// Response captured from a T21 on factory firmware: the model field holds
+    /// the hashboard part name and only `product_type` names the product.
+    #[test]
+    fn board_name_model_falls_back_to_product_type() {
+        let response = serde_json::json!({
+            "miner_type": "Antminer BHB68701",
+            "subtype": "AMLCtrl_BHB6870X",
+            "fw_version": "Thu Mar 28 17:39:26 CST 2024",
+            "product_type": "Antminer T21"
+        });
+
+        let model = parse_model_response(response, "miner_type").unwrap();
+
+        assert!(matches!(
+            model,
+            AntMinerCompatibleModel::AntMiner(AntMinerModel::T21)
+        ));
+        let hardware = MinerHardware::from(model);
+        assert_eq!(hardware.fans, Some(4));
+        assert_eq!(hardware.boards, Some(vec![Some(108); 3]));
+    }
+
+    #[test]
+    fn known_model_ignores_product_type() {
+        let response = serde_json::json!({
+            "miner_type": "Antminer S21",
+            "product_type": "Antminer T21"
+        });
+
+        let model = parse_model_response(response, "miner_type").unwrap();
+
+        assert!(matches!(
+            model,
+            AntMinerCompatibleModel::AntMiner(AntMinerModel::S21)
+        ));
+    }
+
+    /// Without a usable `product_type` a board name stays unrecognised.
+    #[test]
+    fn board_name_model_without_product_type_stays_unknown() {
+        for response in [
+            serde_json::json!({
+                "miner_type": "Antminer H6HB70701",
+                "subtype": "zynq7007_H6HB70701",
+                "fw_version": "Mon Jan  6 15:35:28 CST 2025"
+            }),
+            serde_json::json!({
+                "miner_type": "Antminer HHB68XXX",
+                "subtype": "zynq7007_HHB68XXX",
+                "product_type": "Antminer HHB68XXX"
+            }),
+            serde_json::json!({
+                "miner_type": "Antminer BHB42XXX",
+                "subtype": "AMLCtrl_BHB42XXX"
+            }),
+        ] {
+            let model = parse_model_response(response, "miner_type").unwrap();
+
+            assert!(!model.is_known(), "{model}");
+            assert_eq!(MinerHardware::from(model).boards, None);
+        }
     }
 
     #[tokio::test]

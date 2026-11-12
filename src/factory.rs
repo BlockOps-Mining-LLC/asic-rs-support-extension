@@ -7,6 +7,7 @@ use std::{
     pin::Pin,
     str::FromStr,
     sync::Arc,
+    task::{Context, Poll, ready},
     time::Duration,
 };
 
@@ -28,7 +29,8 @@ use futures::{
 };
 use ipnet::IpNet;
 use rand::seq::SliceRandom;
-use tokio::{net::TcpSocket, sync::Semaphore, time::timeout};
+use tokio::{net::TcpSocket, sync::Semaphore, task::JoinHandle, time::timeout};
+use tracing::Instrument;
 
 const IDENTIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECTIVITY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -228,6 +230,35 @@ async fn get_miner_type_from_command_catch_unwind(
     }
 }
 
+/// One address's scan, run as its own task so it keeps progressing while a
+/// stream consumer is busy between items; its discovery deadlines expire on
+/// wall-clock time either way. Dropping the handle aborts the task.
+struct ScanTask<T>(JoinHandle<T>);
+
+impl<T: Send + 'static> ScanTask<T> {
+    fn spawn(scan: impl Future<Output = T> + Send + 'static) -> Self {
+        Self(tokio::spawn(scan.in_current_span()))
+    }
+}
+
+impl<T> Future for ScanTask<T> {
+    type Output = Option<T>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match ready!(Pin::new(&mut self.0).poll(cx)) {
+            Ok(output) => Poll::Ready(Some(output)),
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(_) => Poll::Ready(None),
+        }
+    }
+}
+
+impl<T> Drop for ScanTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Build the default firmware registry, gated by feature flags.
 ///
 /// Non-stock firmwares are listed first so they take priority over stock
@@ -237,13 +268,11 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     #[cfg_attr(
         not(any(
             feature = "antminer",
-            feature = "iceriver",
-            feature = "kaonsu",
-            feature = "innosilicon",
             feature = "goldshell",
             feature = "auradine",
             feature = "avalonminer",
             feature = "bitaxe",
+            feature = "forgeaxe",
             feature = "braiins",
             feature = "elphapex",
             feature = "epic",
@@ -308,16 +337,6 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
         asic_rs_firmwares_goldshell::firmware::GoldshellFirmware,
     ));
 
-    #[cfg(feature = "innosilicon")]
-    registry.push(Arc::new(
-        asic_rs_firmwares_innosilicon::firmware::InnosiliconFirmware,
-    ));
-
-    #[cfg(feature = "iceriver")]
-    registry.push(Arc::new(
-        asic_rs_firmwares_iceriver::firmware::IceRiverStockFirmware,
-    ));
-
     #[cfg(feature = "futurebit")]
     registry.push(Arc::new(
         asic_rs_firmwares_futurebit::firmware::ApolloFirmware::default(),
@@ -346,6 +365,11 @@ pub fn default_firmware_registry() -> Vec<Arc<dyn FirmwareEntry>> {
     #[cfg(feature = "auradine")]
     registry.push(Arc::new(
         asic_rs_firmwares_auradine::firmware::AuradineFirmware::default(),
+    ));
+
+    #[cfg(feature = "forgeaxe")]
+    registry.push(Arc::new(
+        asic_rs_firmwares_forgeaxe::firmware::ForgeaxeFirmware::default(),
     ));
 
     // NerdAxe before Bitaxe — both check web root but NerdAxe is more specific
@@ -597,12 +621,7 @@ impl MinerFactory {
         self
     }
 
-    /// Set construction credentials by the Display name of a registered
-    /// firmware, accepting the legacy Goldshell read-only name as an alias.
-    /// Discovery requests remain unauthenticated; credentials are
-    /// supplied only to the identified firmware's `build_miner` method.
-    ///
-    /// Unknown names are rejected without including caller input in the error.
+    /// Set construction credentials by the registered firmware's Display name.
     pub fn with_firmware_discovery_auth_by_name(
         mut self,
         firmware_name: &str,
@@ -612,25 +631,14 @@ impl MinerFactory {
             .search_firmwares
             .clone()
             .unwrap_or_else(default_firmware_registry);
-        let registered_name = registry
+        let firmware = registry
             .iter()
-            .map(|firmware| firmware.to_string())
-            .find(|name| name == firmware_name)
-            .or_else(|| {
-                (firmware_name == "Goldshell Stock (read-only)")
-                    .then(|| {
-                        registry
-                            .iter()
-                            .map(|firmware| firmware.to_string())
-                            .find(|name| name == "Goldshell Stock")
-                    })
-                    .flatten()
-            })
+            .find(|firmware| firmware.to_string() == firmware_name)
             .ok_or_else(|| {
                 anyhow::anyhow!("Firmware is not registered for discovery authentication")
             })?;
         self.discovery_auth_by_firmware
-            .insert(registered_name, auth);
+            .insert(firmware.to_string(), auth);
         Ok(self)
     }
 
@@ -926,6 +934,9 @@ impl MinerFactory {
     ///
     /// Use this when callers should process miners as soon as they are found
     /// instead of waiting for the full scan to finish.
+    ///
+    /// Scans already in flight keep running while the stream is not polled; new
+    /// addresses only start as it is polled, and dropping it cancels the rest.
     pub fn scan_stream(&self) -> Pin<Box<impl Stream<Item = Box<dyn Miner>> + Send + use<>>> {
         let concurrency = self
             .concurrent
@@ -946,18 +957,18 @@ impl MinerFactory {
         let stream = stream::iter(0..ip_count)
             .map(move |i| {
                 let factory = Arc::clone(&factory);
-                let ips = Arc::clone(&ips);
+                let ip = ips[i];
                 let connection_limit = Arc::clone(&connection_limit);
-                async move {
+                ScanTask::spawn(async move {
                     factory
-                        .scan_miner_with_connection_limit(ips[i], connection_limit)
+                        .scan_miner_with_connection_limit(ip, connection_limit)
                         .await
                         .ok()
                         .flatten()
-                }
+                })
             })
             .buffer_unordered(concurrency)
-            .filter_map(|miner_opt| async move { miner_opt });
+            .filter_map(|miner_opt| async move { miner_opt.flatten() });
 
         Box::pin(stream)
     }
@@ -966,6 +977,9 @@ impl MinerFactory {
     ///
     /// Stream items are `(ip, miner)` pairs. `miner` is `None` when the host did
     /// not identify as a supported miner.
+    ///
+    /// Scans already in flight keep running while the stream is not polled; new
+    /// addresses only start as it is polled, and dropping it cancels the rest.
     #[allow(clippy::type_complexity)]
     pub fn scan_stream_with_ip(
         &self,
@@ -989,18 +1003,16 @@ impl MinerFactory {
         let stream = stream::iter(0..ip_count)
             .map(move |i| {
                 let factory = Arc::clone(&factory);
-                let ips = Arc::clone(&ips);
+                let ip = ips[i];
                 let connection_limit = Arc::clone(&connection_limit);
-                async move {
-                    (
-                        ips[i],
-                        factory
-                            .scan_miner_with_connection_limit(ips[i], connection_limit)
-                            .await
-                            .ok()
-                            .flatten(),
-                    )
-                }
+                let scan = ScanTask::spawn(async move {
+                    factory
+                        .scan_miner_with_connection_limit(ip, connection_limit)
+                        .await
+                        .ok()
+                        .flatten()
+                });
+                async move { (ip, scan.await.flatten()) }
             })
             .buffer_unordered(concurrency);
 
@@ -1327,6 +1339,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_task_progresses_without_being_polled() {
+        let (done, mut done_rx) = tokio::sync::oneshot::channel();
+        let task = ScanTask::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = done.send(());
+            7
+        });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(done_rx.try_recv().is_ok());
+        assert_eq!(task.await, Some(7));
+    }
+
+    #[tokio::test]
+    async fn dropping_scan_task_aborts_it() {
+        let (done, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = ScanTask::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = done.send(());
+        });
+
+        drop(task);
+
+        assert!(done_rx.await.is_err());
+    }
+
+    #[tokio::test]
     async fn zero_connectivity_retries_still_probes_once() {
         let mut attempts = 0;
 
@@ -1501,5 +1541,23 @@ mod tests {
         };
         assert!(BitaxeFirmware::default().identify_web(&response));
         assert!(!NerdAxeFirmware::default().identify_web(&response));
+    }
+    #[test]
+    #[cfg(feature = "forgeaxe")]
+    fn default_registry_discovers_forgeos() {
+        let response = WebResponse {
+            body: "<html><title>ForgeOS</title></html>",
+            auth_header: "",
+            algo_header: "",
+            redirect_header: "",
+            status: 200,
+        };
+        let registry = default_firmware_registry();
+        let firmware = registry.iter().find(|fw| fw.identify_web(&response));
+        assert_eq!(
+            firmware.map(|fw| fw.to_string()).as_deref(),
+            Some("ForgeOS Stock")
+        );
+        assert!(firmware.is_some_and(|fw| fw.is_stock()));
     }
 }

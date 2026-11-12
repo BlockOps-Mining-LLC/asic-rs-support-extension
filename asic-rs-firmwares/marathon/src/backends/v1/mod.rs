@@ -879,6 +879,7 @@ impl GetFans for MaraV1 {
 }
 
 impl GetPsuFans for MaraV1 {}
+impl GetPsus for MaraV1 {}
 
 impl GetFluidTemperature for MaraV1 {}
 
@@ -1146,6 +1147,7 @@ impl FactoryReset for MaraV1 {
     }
 }
 
+impl RestartMining for MaraV1 {}
 impl RestoreStockOs for MaraV1 {}
 
 #[async_trait]
