@@ -29,7 +29,6 @@ use async_trait::async_trait;
 use macaddr::MacAddr;
 use measurements::{Power, Temperature};
 use rpc::AntMinerRPCAPI;
-use semver::Version;
 use serde_json::{Value, json};
 use web::AntMinerWebAPI;
 
@@ -38,7 +37,7 @@ use crate::{backends::telemetry, firmware::AntMinerStockFirmware};
 
 mod firmware;
 mod rpc;
-pub(crate) mod web;
+pub(in crate::backends) mod web;
 
 #[derive(Debug)]
 pub struct AntMinerV2020 {
@@ -895,11 +894,7 @@ impl Resume for AntMinerV2020 {
         };
 
         let response = self.web.set_miner_conf(miner_conf).await?;
-        if response.get("stats").and_then(Value::as_str) != Some("success") {
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(response.get("stats").and_then(Value::as_str) == Some("success"))
     }
 }
 
@@ -1009,7 +1004,7 @@ impl Validate for AntMinerV2020 {
     type Firmware = AntMinerStockFirmware;
 
     fn validate(version: Option<&semver::Version>) -> bool {
-        version.is_some_and(|v| *v < Version::new(2023, 7, 0))
+        version.is_some_and(|v| v < &super::v2023_07::MIN_VERSION)
     }
 }
 

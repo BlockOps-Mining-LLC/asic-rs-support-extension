@@ -34,7 +34,9 @@ use web::ForgeaxeWebAPI;
 
 use crate::firmware::ForgeaxeFirmware;
 
-pub(crate) mod web;
+pub(in crate::backends) mod web;
+
+pub(crate) const MIN_VERSION: Version = Version::new(1, 1, 0);
 
 /// ForgeOS v1.1 backend, initially copied from the ESP-Miner 2.0 implementation.
 #[derive(Debug)]
@@ -644,7 +646,7 @@ impl Validate for Forgeaxe110 {
     type Firmware = ForgeaxeFirmware;
 
     fn validate(version: Option<&semver::Version>) -> bool {
-        version.is_some_and(|v| *v >= Version::new(1, 1, 0))
+        version.is_some_and(|v| v >= &MIN_VERSION)
     }
 }
 

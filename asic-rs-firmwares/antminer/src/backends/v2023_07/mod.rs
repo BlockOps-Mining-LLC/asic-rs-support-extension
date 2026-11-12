@@ -37,7 +37,9 @@ use web::AntMinerWebAPI;
 
 mod firmware;
 mod rpc;
-pub(crate) mod web;
+pub(in crate::backends) mod web;
+
+pub(crate) const MIN_VERSION: Version = Version::new(2023, 7, 0);
 
 #[derive(Debug)]
 pub struct AntMinerV202307 {
@@ -1233,8 +1235,9 @@ impl SupportsPoolsConfig for AntMinerV202307 {
 
         // The S21Plus cminer proxy rejects the browser-shaped payload with
         // M001. Retry its own read-side shape, changing only the pool list.
-        let read_shape = miner_conf_with_read_shape_pools(&conf, pools)
-            .expect("stock miner config was checked to be a JSON object");
+        let Some(read_shape) = miner_conf_with_read_shape_pools(&conf, pools) else {
+            anyhow::bail!("stock miner config is not a JSON object");
+        };
         let response = self.web.set_miner_conf(read_shape).await?;
         if response.get("code").and_then(Value::as_str) == Some("M000") {
             return Ok(true);
@@ -1390,7 +1393,7 @@ impl Validate for AntMinerV202307 {
     type Firmware = AntMinerStockFirmware;
 
     fn validate(version: Option<&semver::Version>) -> bool {
-        version.is_some_and(|v| *v >= Version::new(2023, 7, 0))
+        version.is_some_and(|v| v >= &MIN_VERSION)
     }
 }
 

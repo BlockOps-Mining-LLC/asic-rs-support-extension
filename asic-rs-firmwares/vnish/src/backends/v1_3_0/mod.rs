@@ -43,6 +43,8 @@ use crate::{
 
 mod web;
 
+pub(crate) const MIN_VERSION: Version = Version::new(1, 3, 0);
+
 #[derive(Debug)]
 pub struct VnishV130 {
     ip: IpAddr,
@@ -1341,7 +1343,7 @@ impl Validate for VnishV130 {
     type Firmware = VnishFirmware;
 
     fn validate(version: Option<&semver::Version>) -> bool {
-        version.is_some_and(|v| *v >= Version::new(1, 3, 0))
+        version.is_some_and(|v| v >= &MIN_VERSION)
     }
 }
 
